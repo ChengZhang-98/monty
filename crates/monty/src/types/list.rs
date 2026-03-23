@@ -125,7 +125,7 @@ impl List {
     /// was already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
     ///
     /// Returns `Value::None`, matching Python's behavior where `list.append()` returns None.
-    pub fn append(&mut self, heap: &mut Heap<impl ResourceTracker>, item: Value) {
+    pub fn append(&mut self, heap: &Heap<impl ResourceTracker>, item: Value) {
         // Track if we're adding a reference and mark potential cycle
         if matches!(item, Value::Ref(_)) {
             self.contains_refs = true;
@@ -146,7 +146,7 @@ impl List {
     ///   the item is appended to the end (matching Python semantics).
     ///
     /// Returns `Value::None`, matching Python's behavior where `list.insert()` returns None.
-    pub fn insert(&mut self, heap: &mut Heap<impl ResourceTracker>, index: usize, item: Value) {
+    pub fn insert(&mut self, heap: &Heap<impl ResourceTracker>, index: usize, item: Value) {
         // Track if we're adding a reference and mark potential cycle
         if matches!(item, Value::Ref(_)) {
             self.contains_refs = true;
@@ -183,7 +183,7 @@ impl List {
     /// Handles slice-based indexing for lists.
     ///
     /// Returns a new list containing the selected elements.
-    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &mut Heap<impl ResourceTracker>) -> RunResult<Value> {
+    fn getitem_slice(&self, slice: &crate::types::Slice, heap: &Heap<impl ResourceTracker>) -> RunResult<Value> {
         let (start, stop, step) = slice
             .indices(self.items.len())
             .map_err(|()| ExcType::value_error_slice_step_zero())?;
@@ -210,14 +210,12 @@ impl PyTrait for List {
     }
 
     fn py_getitem(&self, key: &Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Value> {
-        let heap = &mut *vm.heap;
+        let heap = &*vm.heap;
         // Check for slice first (Value::Ref pointing to HeapData::Slice)
         if let Value::Ref(id) = key
             && let HeapData::Slice(slice) = heap.get(*id)
         {
-            // Clone the slice to release the borrow on heap before calling getitem_slice
-            let slice = slice.clone();
-            return self.getitem_slice(&slice, heap);
+            return self.getitem_slice(slice, heap);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
@@ -576,7 +574,7 @@ fn list_clear(list: &mut List, heap: &mut Heap<impl ResourceTracker>) {
 /// Implements Python's `list.copy()` method.
 ///
 /// Returns a shallow copy of the list.
-fn list_copy(list: &List, heap: &mut Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
+fn list_copy(list: &List, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
     let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
     let heap_id = heap.allocate(HeapData::List(List::new(items)))?;
     Ok(Value::Ref(heap_id))
@@ -779,7 +777,7 @@ pub(crate) fn get_slice_items(
     start: usize,
     stop: usize,
     step: i64,
-    heap: &mut Heap<impl ResourceTracker>,
+    heap: &Heap<impl ResourceTracker>,
 ) -> RunResult<Vec<Value>> {
     let mut result = Vec::new();
 
@@ -843,7 +841,7 @@ mod tests {
         list_items: Vec<Value>,
         index_value: BigInt,
     ) -> (Heap<NoLimitTracker>, HeapId, HeapId) {
-        let mut heap = Heap::new(16, NoLimitTracker);
+        let heap = Heap::new(16, NoLimitTracker);
         let list = List::new(list_items);
         let list_id = heap.allocate(HeapData::List(list)).unwrap();
         let long_int = LongInt::new(index_value);
