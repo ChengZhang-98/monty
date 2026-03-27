@@ -80,6 +80,9 @@ pub enum ExcType {
     ValueError,
     /// Subclass of ValueError - for encoding/decoding errors.
     UnicodeDecodeError,
+    /// Subclass of ValueError for invalid JSON syntax in `json.loads()`.
+    #[strum(serialize = "json.JSONDecodeError")]
+    JsonDecodeError,
 
     // --- ImportError hierarchy ---
     /// Import-related errors (module not found, name not in module).
@@ -153,8 +156,8 @@ impl ExcType {
             Self::AttributeError => matches!(self, Self::FrozenInstanceError),
             // NameError catches UnboundLocalError
             Self::NameError => matches!(self, Self::UnboundLocalError),
-            // ValueError catches UnicodeDecodeError
-            Self::ValueError => matches!(self, Self::UnicodeDecodeError),
+            // ValueError catches UnicodeDecodeError and json.JSONDecodeError
+            Self::ValueError => matches!(self, Self::UnicodeDecodeError | Self::JsonDecodeError),
             // ImportError catches ModuleNotFoundError
             Self::ImportError => matches!(self, Self::ModuleNotFoundError),
             // OSError catches FileNotFoundError, FileExistsError, IsADirectoryError, NotADirectoryError
@@ -692,6 +695,11 @@ impl ExcType {
         SimpleException::new_msg(Self::TypeError, msg).into()
     }
 
+    /// Creates a generic `ValueError` with a custom message.
+    pub(crate) fn value_error(msg: impl fmt::Display) -> RunError {
+        SimpleException::new_msg(Self::ValueError, msg).into()
+    }
+
     /// Creates a TypeError for bytes() constructor with invalid type.
     ///
     /// Matches CPython's format: `TypeError: cannot convert '{type}' object to bytes`
@@ -946,7 +954,7 @@ impl ExcType {
     pub(crate) fn name_error(name: &str) -> SimpleException {
         let mut msg = format!("name '{name}' is not defined");
         // add the same suffix as cpython, but only for the modules supported by Monty
-        if matches!(name, "asyncio" | "sys" | "typing" | "types" | "re") {
+        if matches!(name, "asyncio" | "sys" | "typing" | "types" | "re" | "json") {
             write!(&mut msg, ". Did you forget to import '{name}'?").unwrap();
         }
         SimpleException::new_msg(Self::NameError, msg)
@@ -1031,8 +1039,7 @@ impl ExcType {
 
     /// Creates a ValueError when an integer is too large to convert to a decimal string.
     ///
-    /// Matches CPython 3.11+'s `sys.int_max_str_digits` behavior but omits the
-    /// `sys.set_int_max_str_digits()` advice since Monty does not expose that API.
+    /// Matches CPython 3.11+'s `sys.int_max_str_digits` error message.
     #[must_use]
     pub(crate) fn value_error_int_too_large_for_str() -> RunError {
         SimpleException::new_msg(
@@ -1049,7 +1056,9 @@ impl ExcType {
     pub(crate) fn value_error_int_str_too_large(digit_count: usize) -> RunError {
         SimpleException::new_msg(
             Self::ValueError,
-            format!("Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: value has {digit_count} digits"),
+            format!(
+                "Exceeds the limit ({INT_MAX_STR_DIGITS} digits) for integer string conversion: value has {digit_count} digits"
+            ),
         )
         .into()
     }
@@ -1293,6 +1302,79 @@ impl ExcType {
     #[must_use]
     pub(crate) fn re_pattern_error(msg: impl fmt::Display) -> RunError {
         SimpleException::new_msg(Self::RePatternError, msg).into()
+    }
+
+    /// Creates a `json.JSONDecodeError` with CPython-compatible location suffix.
+    ///
+    /// Matches CPython's format:
+    /// `{message}: line {line} column {column} (char {index})`
+    #[must_use]
+    pub(crate) fn json_decode_error(message: &str, line: usize, column: usize, index: usize) -> RunError {
+        SimpleException::new_msg(
+            Self::JsonDecodeError,
+            format!("{message}: line {line} column {column} (char {index})"),
+        )
+        .into()
+    }
+
+    /// Creates the `TypeError` used by `json.loads()` for unsupported input types.
+    ///
+    /// Matches CPython's format:
+    /// `the JSON object must be str, bytes or bytearray, not {type}`
+    #[must_use]
+    pub(crate) fn json_loads_type_error(type_: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("the JSON object must be str, bytes or bytearray, not {type_}"),
+        )
+        .into()
+    }
+
+    /// Creates the `ValueError` used by `json.dumps()` for circular containers.
+    ///
+    /// Matches CPython's format: `Circular reference detected`
+    #[must_use]
+    pub(crate) fn json_circular_reference_error() -> RunError {
+        SimpleException::new_msg(Self::ValueError, "Circular reference detected").into()
+    }
+
+    /// Creates the `TypeError` used by `json.dumps()` for unsupported object types.
+    ///
+    /// Matches CPython's format:
+    /// `Object of type {type} is not JSON serializable`
+    #[must_use]
+    pub(crate) fn json_not_serializable_error(type_: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("Object of type {type_} is not JSON serializable"),
+        )
+        .into()
+    }
+
+    /// Creates the `TypeError` used by `json.dumps()` for unsupported dict keys.
+    ///
+    /// Matches CPython's format:
+    /// `keys must be str, int, float, bool or None, not {type}`
+    #[must_use]
+    pub(crate) fn json_invalid_key_error(type_: Type) -> RunError {
+        SimpleException::new_msg(
+            Self::TypeError,
+            format!("keys must be str, int, float, bool or None, not {type_}"),
+        )
+        .into()
+    }
+
+    /// Creates the `ValueError` used by `json.dumps(..., allow_nan=False)`.
+    ///
+    /// Matches CPython's format:
+    /// `Out of range float values are not JSON compliant: {value}`
+    #[must_use]
+    pub(crate) fn json_nan_error(value: &str) -> RunError {
+        SimpleException::new_msg(
+            Self::ValueError,
+            format!("Out of range float values are not JSON compliant: {value}"),
+        )
+        .into()
     }
 }
 
