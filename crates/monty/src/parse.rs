@@ -16,7 +16,7 @@ use crate::{
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException},
     expressions::{
-        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, Literal, Node, Operator,
+        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal, Node, Operator,
         SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
@@ -435,22 +435,21 @@ impl<'a> Parser<'a> {
                 Ok(Node::Assert { test, msg })
             }
             Stmt::Import(ast::StmtImport { names, range, .. }) => {
-                // We only support single module imports (e.g., `import sys`)
-                // Multi-module imports (e.g., `import sys, os`) are not supported
                 let position = self.convert_range(range);
-                if names.len() != 1 {
-                    return Err(ParseError::not_implemented("multi-module import statements", position));
-                }
-                let alias_node = &names[0];
-                let module_name = self.interner.intern(&alias_node.name);
-                // The binding name is the alias if present, otherwise the module name
-                let binding_name = alias_node
-                    .asname
-                    .as_ref()
-                    .map_or(module_name, |n| self.interner.intern(&n.id));
-                // Create an unresolved identifier (namespace slot will be set during prepare)
-                let binding = Identifier::new(binding_name, position);
-                Ok(Node::Import { module_name, binding })
+                let import_names = names
+                    .iter()
+                    .map(|alias_node| {
+                        let module_name = self.interner.intern(&alias_node.name);
+                        // The binding name is the alias if present, otherwise the module name
+                        let binding_name = alias_node
+                            .asname
+                            .as_ref()
+                            .map_or(module_name, |n| self.interner.intern(&n.id));
+                        let binding = Identifier::new(binding_name, position);
+                        ImportName { module_name, binding }
+                    })
+                    .collect();
+                Ok(Node::Import { names: import_names })
             }
             Stmt::ImportFrom(ast::StmtImportFrom {
                 module,
