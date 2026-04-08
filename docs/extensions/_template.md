@@ -58,6 +58,14 @@ How to run the tests for this extension:
 uv run python -m pytest crates/monty-python/tests/test_... -v -k "test_name"
 ```
 
+## Commits
+
+Update this table with every commit related to this extension.
+
+| Hash | Description |
+|------|-------------|
+| `abcdef0` | Initial implementation |
+
 ## Future Considerations
 
 Any known limitations or planned improvements.

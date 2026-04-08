@@ -154,7 +154,11 @@ class Monty:
         Arguments:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
-            print_callback: Optional callback for print output
+            print_callback: Optional callback for print output (per-fragment strings)
+            structured_print_callback: Optional callback for structured print output,
+                called once per ``print()`` as ``(stream, objects, sep, end)`` where
+                objects is a list of native Python values. Cannot be used together
+                with ``print_callback``.
 
         Returns:
             FunctionSnapshot if an external function call is pending,
@@ -186,7 +190,11 @@ class Monty:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
             external_functions: Dict of external function callbacks (sync or async)
-            print_callback: Optional callback for print output
+            print_callback: Optional callback for print output (per-fragment strings)
+            structured_print_callback: Optional callback for structured print output,
+                called once per ``print()`` as ``(stream, objects, sep, end)`` where
+                objects is a list of native Python values. Cannot be used together
+                with ``print_callback``.
             os: Optional OS access handler for filesystem operations
 
         Returns:
@@ -299,6 +307,18 @@ class MontyRepl:
         When `external_functions` is provided, external function calls and
         name lookups are dispatched to the provided callables — matching the
         behavior of `Monty.run(external_functions=...)`.
+
+        Arguments:
+            code: The Python code snippet to execute
+            inputs: Dict of input values to inject into the REPL namespace
+            external_functions: Dict of external function callbacks
+            print_callback: Optional callback for print output (per-fragment strings)
+            structured_print_callback: Optional callback for structured print output,
+                called once per ``print()`` as ``(stream, objects, sep, end)`` where
+                objects is a list of native Python values. Cannot be used together
+                with ``print_callback``.
+            mount: Optional mount directory or list of mount directories
+            os: Optional callback for OS calls
         """
 
     def feed_run_async(
@@ -321,7 +341,11 @@ class MontyRepl:
             code: The Python code snippet to execute
             inputs: Dict of input values to inject into the REPL namespace
             external_functions: Dict of external function callbacks (sync or async)
-            print_callback: Optional callback for print output
+            print_callback: Optional callback for print output (per-fragment strings)
+            structured_print_callback: Optional callback for structured print output,
+                called once per ``print()`` as ``(stream, objects, sep, end)`` where
+                objects is a list of native Python values. Cannot be used together
+                with ``print_callback``.
             os: Optional OS access handler for filesystem operations
 
         Returns:
@@ -352,6 +376,15 @@ class MontyRepl:
         including support for async external functions via `FutureSnapshot`.
 
         On completion or error, the REPL state is automatically restored.
+
+        Arguments:
+            code: The Python code snippet to execute
+            inputs: Dict of input values to inject into the REPL namespace
+            print_callback: Optional callback for print output (per-fragment strings)
+            structured_print_callback: Optional callback for structured print output,
+                called once per ``print()`` as ``(stream, objects, sep, end)`` where
+                objects is a list of native Python values. Cannot be used together
+                with ``print_callback``.
         """
 
     def dump(self) -> bytes:

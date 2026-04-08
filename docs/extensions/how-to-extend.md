@@ -141,8 +141,13 @@ in. Update the table in [README.md](README.md).
 
 ## Step 9: Commit and Merge
 
+Before every commit, update the **Commits** table in your extension doc
+(`docs/extensions/implemented/my-extension.md`) with the new commit hash and
+a short description. Include the doc update in the same commit.
+
 ```bash
-git add <files>
+# Update docs/extensions/implemented/my-extension.md with the commit hash
+git add <files> docs/extensions/implemented/my-extension.md
 git commit -m "Add my-extension: brief description"
 git checkout tiny-beaver-ext
 git merge feature/my-thing

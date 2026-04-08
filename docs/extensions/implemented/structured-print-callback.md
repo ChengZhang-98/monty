@@ -147,6 +147,13 @@ Tests cover:
 - MontyRepl.feed_run
 - MontyRepl.feed_start
 
+## Commits
+
+| Hash | Description |
+|------|-------------|
+| `caeeeaf` | Add structured_print_callback for typed print output |
+| `e822822` | Document structured_print_callback in all .pyi docstrings |
+
 ## Future Considerations
 
 - The `load_snapshot` and `load_repl_snapshot` functions also accept
