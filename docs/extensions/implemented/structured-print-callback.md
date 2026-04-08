@@ -152,6 +152,7 @@ Tests cover:
 | Hash | Description |
 |------|-------------|
 | `caeeeaf` | Add structured_print_callback for typed print output |
+| `8f00eae` | Document structured_print_callback in all .pyi docstrings |
 
 ## Future Considerations
 
