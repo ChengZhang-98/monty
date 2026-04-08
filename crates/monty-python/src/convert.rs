@@ -21,6 +21,7 @@ use pyo3::{
 use crate::{
     dataclass::{DcRegistry, dataclass_to_monty, dataclass_to_py, is_dataclass},
     exceptions::{exc_monty_to_py, exc_to_monty_object},
+    non_serializable::PyNonSerializable,
 };
 
 /// Converts a Python object to Monty's `MontyObject` representation.
@@ -254,11 +255,53 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
             Ok(path_obj.into_any().unbind())
         }
         // Output-only types - convert to string representation
-        MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),
+        MontyObject::Repr { repr, .. } => Ok(PyString::new(py, repr).into_any().unbind()),
         MontyObject::Cycle(_, placeholder) => Ok(PyString::new(py, placeholder).into_any().unbind()),
         // Function objects are internal to the name lookup protocol and should not normally
         // appear as final output values. If they do, represent as a string with the function name.
         MontyObject::Function { name, .. } => Ok(PyString::new(py, name).into_any().unbind()),
+    }
+}
+
+/// Converts a `MontyObject` to a Python object for the structured print callback.
+///
+/// Like [`monty_to_py`], but wraps non-serializable types (`Repr`, `Cycle`, `Function`)
+/// in [`PyNonSerializable`] instead of converting them to plain strings. This lets
+/// callback consumers distinguish non-serializable values from genuine strings
+/// via `isinstance(obj, NonSerializable)`.
+pub fn monty_to_py_structured(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) -> PyResult<Py<PyAny>> {
+    match obj {
+        MontyObject::Repr { type_name, repr } => Ok(PyNonSerializable {
+            type_name: type_name.clone(),
+            repr: repr.clone(),
+        }
+        .into_pyobject(py)?
+        .into_any()
+        .unbind()),
+        MontyObject::Cycle(_, placeholder) => {
+            let type_name = match placeholder.as_str() {
+                "[...]" => "cycle_list",
+                "(...)" => "cycle_tuple",
+                "{...}" => "cycle_dict",
+                _ => "cycle_other",
+            };
+            Ok(PyNonSerializable {
+                type_name: type_name.to_owned(),
+                repr: placeholder.clone(),
+            }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind())
+        }
+        MontyObject::Function { name, .. } => Ok(PyNonSerializable {
+            type_name: "function".to_owned(),
+            repr: name.clone(),
+        }
+        .into_pyobject(py)?
+        .into_any()
+        .unbind()),
+        // All other types delegate to the standard conversion
+        other => monty_to_py(py, other, dc_registry),
     }
 }
 

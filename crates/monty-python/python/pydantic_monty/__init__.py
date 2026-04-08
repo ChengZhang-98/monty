@@ -20,6 +20,7 @@ from ._monty import (
     MontyTypingError,
     MountDirectory,
     NameLookupSnapshot,
+    NonSerializable,
     __version__,
     load_repl_snapshot,
     load_snapshot,
@@ -46,6 +47,7 @@ __all__ = (
     'MontyTypingError',
     'Frame',
     'MountDirectory',
+    'NonSerializable',
     'load_snapshot',
     'load_repl_snapshot',
     # os_access

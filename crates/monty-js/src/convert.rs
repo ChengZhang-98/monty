@@ -99,7 +99,7 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
             frozen,
         } => create_js_dataclass(name, *type_id, field_names, attrs, *frozen, env)?,
         MontyObject::Path(p) => env.create_string(p)?.into_unknown(env)?,
-        MontyObject::Repr(s) | MontyObject::Cycle(_, s) => env.create_string(s)?.into_unknown(env)?,
+        MontyObject::Repr { repr, .. } | MontyObject::Cycle(_, repr) => env.create_string(repr)?.into_unknown(env)?,
         // Function objects are internal to the name lookup protocol and should not normally
         // appear as final output values. If they do, represent as a string with the function name.
         MontyObject::Function { name, .. } => env.create_string(name)?.into_unknown(env)?,
@@ -632,12 +632,18 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
         "Type" => {
             // Type objects can't be fully round-tripped; return as Repr
             let value: String = obj.get_named_property("value")?;
-            Ok(MontyObject::Repr(format!("<class '{value}'>")))
+            Ok(MontyObject::Repr {
+                type_name: "type".to_owned(),
+                repr: format!("<class '{value}'>"),
+            })
         }
         "BuiltinFunction" => {
             // BuiltinFunction objects can't be fully round-tripped; return as Repr
             let value: String = obj.get_named_property("value")?;
-            Ok(MontyObject::Repr(format!("<built-in function {value}>")))
+            Ok(MontyObject::Repr {
+                type_name: "builtin_function".to_owned(),
+                repr: format!("<built-in function {value}>"),
+            })
         }
         "Dataclass" => {
             let name: String = obj.get_named_property("name")?;

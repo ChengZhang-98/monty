@@ -327,10 +327,17 @@ pub enum MontyObject {
     },
     /// Fallback for values that cannot be represented as other variants.
     ///
-    /// Contains the `repr()` string of the original value.
+    /// Contains the type name (e.g. `"range"`, `"iterator"`) and the `repr()` string
+    /// of the original value. The type name enables downstream consumers to distinguish
+    /// non-serializable objects from regular strings and make type-based decisions.
     ///
     /// This is output-only and cannot be used as an input to `Executor::run()`.
-    Repr(String),
+    Repr {
+        /// The Python type name of the original value (e.g. `"range"`, `"module"`, `"coroutine"`).
+        type_name: String,
+        /// The `repr()` string of the original value.
+        repr: String,
+    },
     /// Represents a cycle detected during Value-to-MontyObject conversion.
     ///
     /// When converting cyclic structures (e.g., `a = []; a.append(a)`), this variant
@@ -348,6 +355,7 @@ impl fmt::Display for MontyObject {
             Self::Cycle(_, placeholder) => f.write_str(placeholder),
             Self::Type(t) => write!(f, "<class '{t}'>"),
             Self::Function { name, .. } => write!(f, "<function '{name}' external>"),
+            Self::Repr { repr, .. } => f.write_str(repr),
             _ => self.repr_fmt(f),
         }
     }
@@ -537,7 +545,7 @@ impl MontyObject {
                     Ok(Value::Ref(vm.heap.allocate(HeapData::ExtFunction(name))?))
                 }
             }
-            Self::Repr(_) => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
+            Self::Repr { .. } => Err(InvalidInputError::invalid_type("'Repr' is not a valid input value")),
             Self::Cycle(_, _) => Err(InvalidInputError::invalid_type("'Cycle' is not a valid input value")),
         }
     }
@@ -557,7 +565,10 @@ impl MontyObject {
     fn from_value_inner(object: &Value, vm: &VM<'_, '_, impl ResourceTracker>, visited: &mut AHashSet<HeapId>) -> Self {
         // Check depth limit before processing
         let Some(token) = vm.heap.incr_recursion_depth_for_repr() else {
-            return Self::Repr("<deeply nested>".to_owned());
+            return Self::Repr {
+                type_name: "unknown".to_owned(),
+                repr: "<deeply nested>".to_owned(),
+            };
         };
         crate::defer_drop_immutable_heap!(token, vm);
         match object {
@@ -709,7 +720,10 @@ impl MontyObject {
                     }
                     HeapData::Iter(_) => {
                         // Iterators are internal objects - represent as a type string
-                        Self::Repr("<iterator>".to_owned())
+                        Self::Repr {
+                            type_name: "iterator".to_owned(),
+                            repr: "<iterator>".to_owned(),
+                        }
                     }
                     HeapData::DictKeysView(_) | HeapData::DictItemsView(_) | HeapData::DictValuesView(_) => {
                         repr_or_error(object, vm)
@@ -717,18 +731,27 @@ impl MontyObject {
                     HeapData::LongInt(li) => Self::BigInt(li.inner().clone()),
                     HeapData::Module(m) => {
                         // Modules are represented as a repr string
-                        Self::Repr(format!("<module '{}'>", vm.interns.get_str(m.name())))
+                        Self::Repr {
+                            type_name: "module".to_owned(),
+                            repr: format!("<module '{}'>", vm.interns.get_str(m.name())),
+                        }
                     }
                     HeapData::Slice(_) => repr_or_error(object, vm),
                     HeapData::Coroutine(coro) => {
                         // Coroutines are represented as a repr string
                         let func = vm.interns.get_function(coro.func_id);
                         let name = vm.interns.get_str(func.name.name_id);
-                        Self::Repr(format!("<coroutine object {name}>"))
+                        Self::Repr {
+                            type_name: "coroutine".to_owned(),
+                            repr: format!("<coroutine object {name}>"),
+                        }
                     }
                     HeapData::GatherFuture(gather) => {
                         // GatherFutures are represented as a repr string
-                        Self::Repr(format!("<gather({})>", gather.item_count()))
+                        Self::Repr {
+                            type_name: "gather".to_owned(),
+                            repr: format!("<gather({})>", gather.item_count()),
+                        }
                     }
                     HeapData::Path(path) => Self::Path(path.as_str().to_owned()),
                     HeapData::RePattern(_) | HeapData::ReMatch(_) => repr_or_error(object, vm),
@@ -755,15 +778,22 @@ impl MontyObject {
 /// Converts a value to its repr string for `MontyObject`, falling back to a
 /// descriptive error message if `py_repr` fails (e.g. INT_MAX_STR_DIGITS).
 fn repr_or_error(value: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> MontyObject {
+    let ty = value.py_type(vm);
+    let type_name = ty.to_string();
     match value.py_repr(vm) {
-        Ok(s) => MontyObject::Repr(s.into_owned()),
+        Ok(s) => MontyObject::Repr {
+            type_name,
+            repr: s.into_owned(),
+        },
         Err(e) => {
-            let ty = value.py_type(vm);
             let msg = match &e {
                 RunError::Internal(s) => s.to_string(),
                 RunError::Exc(exc) | RunError::UncatchableExc(exc) => exc.exc.to_string(),
             };
-            MontyObject::Repr(format!("<{ty} object, error on repr(): {msg}>"))
+            MontyObject::Repr {
+                type_name,
+                repr: format!("<{ty} object, error on repr(): {msg}>"),
+            }
         }
     }
 }
@@ -994,7 +1024,7 @@ impl MontyObject {
             Self::Type(t) => write!(f, "<class '{t}'>"),
             Self::BuiltinFunction(func) => write!(f, "<built-in function {func}>"),
             Self::Function { name, .. } => write!(f, "<function '{name}' external>"),
-            Self::Repr(s) => write!(f, "Repr({})", StringRepr(s)),
+            Self::Repr { repr, .. } => write!(f, "Repr({})", StringRepr(repr)),
             Self::Cycle(_, placeholder) => f.write_str(placeholder),
         }
     }
@@ -1032,9 +1062,11 @@ impl MontyObject {
             Self::Exception { .. } => true,
             Self::Path(_) => true,          // Path instances are always truthy
             Self::Dataclass { .. } => true, // Dataclass instances are always truthy
-            Self::Type(_) | Self::BuiltinFunction(_) | Self::Function { .. } | Self::Repr(_) | Self::Cycle(_, _) => {
-                true
-            }
+            Self::Type(_)
+            | Self::BuiltinFunction(_)
+            | Self::Function { .. }
+            | Self::Repr { .. }
+            | Self::Cycle(_, _) => true,
         }
     }
 
@@ -1067,7 +1099,7 @@ impl MontyObject {
             Self::Type(_) => "type",
             Self::BuiltinFunction(_) => "builtin_function_or_method",
             Self::Function { .. } => "function",
-            Self::Repr(_) => "repr",
+            Self::Repr { .. } => "repr",
             Self::Cycle(_, _) => "cycle",
         }
     }
@@ -1194,7 +1226,16 @@ impl PartialEq for MontyObject {
                     docstring: b_doc,
                 },
             ) => a_name == b_name && a_doc == b_doc,
-            (Self::Repr(a), Self::Repr(b)) => a == b,
+            (
+                Self::Repr {
+                    type_name: a_ty,
+                    repr: a_repr,
+                },
+                Self::Repr {
+                    type_name: b_ty,
+                    repr: b_repr,
+                },
+            ) => a_ty == b_ty && a_repr == b_repr,
             (Self::Cycle(a, _), Self::Cycle(b, _)) => a == b,
             (Self::Type(a), Self::Type(b)) => a == b,
             _ => false,

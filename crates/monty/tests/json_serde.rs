@@ -84,8 +84,14 @@ fn json_output_exception() {
 
 #[test]
 fn json_output_repr() {
-    let obj = MontyObject::Repr("<function foo>".to_string());
-    assert_eq!(serde_json::to_string(&obj).unwrap(), r#"{"Repr":"<function foo>"}"#);
+    let obj = MontyObject::Repr {
+        type_name: "function".to_string(),
+        repr: "<function foo>".to_string(),
+    };
+    assert_eq!(
+        serde_json::to_string(&obj).unwrap(),
+        r#"{"Repr":{"type_name":"function","repr":"<function foo>"}}"#
+    );
 }
 
 #[test]

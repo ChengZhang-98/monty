@@ -53,7 +53,9 @@ def my_handler(
         objects: All positional args as native Python objects.
             JSON-serializable types (int, str, float, bool, None, list, dict,
             tuple) are passed as-is. Non-serializable types (functions,
-            iterators, ranges, etc.) are passed as their repr() string.
+            iterators, ranges, cyclic references, etc.) are wrapped in
+            `NonSerializable(type_name, repr)` objects. Use
+            `isinstance(obj, NonSerializable)` to detect them.
         sep: Separator between arguments (default ' ')
         end: String appended after last argument (default '\n')
     """
@@ -71,7 +73,7 @@ def my_handler(
 ### Examples
 
 ```python
-from pydantic_monty import Monty
+from pydantic_monty import Monty, NonSerializable
 
 calls = []
 def handler(stream, objects, sep, end):
@@ -81,6 +83,15 @@ m = Monty('print(1, "hello", [1, 2], sep="-")')
 m.run(structured_print_callback=handler)
 # calls == [([1, "hello", [1, 2]], "-", "\n")]
 #           ^^^^^^^^^^^^^^^^^^^ native types, not strings
+
+# Non-serializable types become NonSerializable objects:
+m2 = Monty('print(range(5))')
+m2.run(structured_print_callback=handler)
+obj = calls[-1][0][0]
+assert isinstance(obj, NonSerializable)
+assert obj.type_name == 'range'
+assert obj.repr == 'range(0, 5)'
+assert str(obj) == 'range(0, 5)'  # backward-compatible in string contexts
 ```
 
 ## Implementation
@@ -91,7 +102,9 @@ m.run(structured_print_callback=handler)
 |------|--------|
 | `crates/monty/src/io.rs` | Added `wants_structured()` and `stdout_write_structured()` default methods to `PrintWriterCallback` trait and `PrintWriter` enum |
 | `crates/monty/src/builtins/print.rs` | Branch: if `wants_structured()`, convert Values to MontyObjects and call `stdout_write_structured` once; else existing string path |
-| `crates/monty/src/object.rs` | Made `MontyObject::from_value` `pub(crate)` (was private) |
+| `crates/monty/src/object.rs` | Made `MontyObject::from_value` `pub(crate)` (was private); changed `Repr(String)` to `Repr { type_name, repr }` |
+| `crates/monty-python/src/non_serializable.rs` | New file: `NonSerializable` pyclass with `type_name` and `repr` fields |
+| `crates/monty-python/src/convert.rs` | Added `monty_to_py_structured()` that wraps `Repr`/`Cycle`/`Function` in `NonSerializable` |
 | `crates/monty-python/src/monty_cls.rs` | Added `StructuredCallbackMarker` pyclass, `CallbackStructuredPrint` struct, `resolve_print_callback()`, `wrap/unwrap_structured_callback()` |
 | `crates/monty-python/src/async_dispatch.rs` | Updated `with_print_writer` to detect marker and create `CallbackStructuredPrint` |
 | `crates/monty-python/src/repl.rs` | Added `structured_print_callback` param to `feed_run`, `feed_start`, `feed_run_async`; added `make_print_writer_from_callback` helper |
@@ -120,10 +133,15 @@ m.run(structured_print_callback=handler)
 2. **sep/end as parameters**: Passed through to the callback so it can
    reconstruct the full output if needed, or ignore them.
 
-3. **MontyObject → Python conversion**: Uses the existing `monty_to_py()` path,
-   which means types like `Type(int)` become the actual Python `int` type
-   object (not the string `"<class 'int'>"`). Only `MontyObject::Repr` variants
-   (ranges, iterators, closures, etc.) become strings.
+3. **MontyObject → Python conversion**: Uses `monty_to_py_structured()`, which
+   delegates to `monty_to_py()` for serializable types but wraps `Repr`, `Cycle`,
+   and `Function` variants in `NonSerializable(type_name, repr)` objects instead
+   of plain strings. This lets consumers use `isinstance(obj, NonSerializable)`
+   to distinguish non-serializable values. The `type_name` field carries the
+   Python type name (e.g. `"range"`, `"iterator"`, `"cycle_list"`), and the
+   `repr` field carries the repr string. `str(obj)` returns the repr for
+   backward compatibility. The general `monty_to_py()` path (used by `run()`
+   return values etc.) still converts these to plain strings.
 
 4. **DcRegistry in marker**: The structured callback needs `DcRegistry` to
    convert dataclass MontyObjects back to proper Python dataclass instances.
@@ -133,7 +151,7 @@ m.run(structured_print_callback=handler)
 
 ```bash
 make dev-py
-uv run python -m pytest crates/monty-python/tests/test_print.py -v -k "structured"
+uv run python -m pytest crates/monty-python/tests/test_print.py -v -k "structured or non_serializable"
 ```
 
 Tests cover:
@@ -142,7 +160,10 @@ Tests cover:
 - Custom sep/end
 - Empty print()
 - Multiple print() calls
-- Non-serializable fallback (range → repr string)
+- Non-serializable fallback (range → `NonSerializable`)
+- `isinstance()` detection of `NonSerializable` alongside native types
+- `NonSerializable` equality comparison
+- Iterator → `NonSerializable` with `type_name='iterator'`
 - Both-callbacks error
 - MontyRepl.feed_run
 - MontyRepl.feed_start
