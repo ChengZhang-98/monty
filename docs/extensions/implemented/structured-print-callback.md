@@ -6,11 +6,17 @@ Receive `print()` arguments as native Python objects instead of string fragments
 
 ## Motivation
 
+Tiny Beaver has a **visibility/sanitization system** (SAFE vs TAINTED modes)
+that controls how external data flows back to the Planning LLM. When sandboxed
+code calls `print()`, the output may contain external data (e.g., web page
+content, file contents) that needs sanitization before being included in the
+PLLM conversation.
+
 The existing `print_callback` receives `str(obj)` for each argument, losing
-type information. Tiny-beaver needs to sanitize print output based on the
-structure and type of the printed objects (e.g., filtering lists of sensitive
-data, redacting based on type). This requires the original typed objects, not
-their string representations.
+type information. Sanitization decisions depend on the structure and type of
+the printed objects — for example, a plain string from `web_fetch` needs
+different handling than an integer or a list of redacted fields. This requires
+the original typed objects, not their string representations.
 
 ## API
 

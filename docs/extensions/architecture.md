@@ -3,6 +3,32 @@
 This document describes the Monty codebase architecture relevant to extension
 developers. Read this before implementing any extension.
 
+## How Tiny Beaver Uses Monty
+
+Tiny Beaver's primary interface is `MontyRepl`, used in iterative mode:
+
+```
+BeaverAgent (orchestrator)
+  → PLLM generates Python code
+    → MontyRepl.feed_start(code)
+      → code runs in sandbox
+        → print() → captured via print_callback / structured_print_callback
+        → external_fn() → FunctionSnapshot returned to BeaverAgent
+          → BeaverAgent dispatches to real Python callable
+          → snapshot.resume(return_value=result)
+            → execution continues...
+              → MontyComplete → result returned to BeaverAgent
+```
+
+Key paths to understand for extensions:
+- **Output capture**: `print()` → `PrintWriter` → callback. This is where
+  `structured_print_callback` hooks in for visibility-aware sanitization.
+- **External function dispatch**: `feed_start` → `FunctionSnapshot` →
+  `resume`. This is the pause/resume chain that threads `print_callback`
+  through snapshots.
+- **Session persistence**: `MontyRepl.dump()` / `MontyRepl.load()` for agent
+  snapshot serialization. Note: callbacks are **not** serialized.
+
 ## Layer Diagram
 
 ```
