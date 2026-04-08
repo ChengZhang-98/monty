@@ -294,7 +294,10 @@ fn input_exception_raise() {
 #[test]
 fn invalid_input_repr() {
     let ex = MontyRun::new("x".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
-    let result = ex.run_no_limits(vec![MontyObject::Repr("some repr".to_string())]);
+    let result = ex.run_no_limits(vec![MontyObject::Repr {
+        type_name: "test".to_string(),
+        repr: "some repr".to_string(),
+    }]);
     assert!(result.is_err(), "Repr should not be a valid input");
 }
 
@@ -302,9 +305,10 @@ fn invalid_input_repr() {
 fn invalid_input_repr_nested_in_list() {
     let ex = MontyRun::new("x".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
     // Repr nested inside a list should still be invalid
-    let result = ex.run_no_limits(vec![MontyObject::List(vec![MontyObject::Repr(
-        "nested repr".to_string(),
-    )])]);
+    let result = ex.run_no_limits(vec![MontyObject::List(vec![MontyObject::Repr {
+        type_name: "test".to_string(),
+        repr: "nested repr".to_string(),
+    }])]);
     assert!(result.is_err(), "Repr nested in list should be invalid");
 }
 

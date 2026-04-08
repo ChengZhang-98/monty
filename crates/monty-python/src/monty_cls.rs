@@ -25,7 +25,7 @@ use send_wrapper::SendWrapper;
 
 use crate::{
     async_dispatch::{await_run_transition, dispatch_loop_run, with_print_writer},
-    convert::{get_docstring, monty_to_py, py_to_monty},
+    convert::{get_docstring, monty_to_py, monty_to_py_structured, py_to_monty},
     dataclass::DcRegistry,
     exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
@@ -195,12 +195,7 @@ impl PyMonty {
         let input_values = self.extract_input_values(inputs, &dc_registry)?;
 
         // Resolve the two callback options into a single Option<Py<PyAny>>
-        let resolved_callback = resolve_print_callback(
-            py,
-            print_callback,
-            structured_print_callback,
-            &dc_registry,
-        )?;
+        let resolved_callback = resolve_print_callback(py, print_callback, structured_print_callback, &dc_registry)?;
 
         // Build print writer
         let mut string_cb;
@@ -1826,7 +1821,7 @@ impl PrintWriterCallback for CallbackStructuredPrint {
                 py,
                 objects
                     .iter()
-                    .map(|obj| monty_to_py(py, obj, dc_registry))
+                    .map(|obj| monty_to_py_structured(py, obj, dc_registry))
                     .collect::<PyResult<Vec<_>>>()?,
             )?;
             self.callback.bind(py).call1(("stdout", py_objects, sep, end))?;

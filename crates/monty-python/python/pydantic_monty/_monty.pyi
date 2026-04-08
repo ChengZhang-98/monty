@@ -21,11 +21,33 @@ __all__ = [
     'MontyRuntimeError',
     'MontyTypingError',
     'MountDirectory',
+    'NonSerializable',
     'Frame',
     'load_snapshot',
     'load_repl_snapshot',
 ]
 __version__: str
+
+@final
+class NonSerializable:
+    """A marker object for Monty values that could not be converted to native Python types.
+
+    Returned by ``structured_print_callback`` for non-serializable values such as
+    iterators, ranges, modules, coroutines, and cyclic references. Use
+    ``isinstance(obj, NonSerializable)`` to detect these objects.
+
+    ``str()`` returns the original repr string for backward compatibility.
+    """
+
+    type_name: str
+    """The Python type name of the original value (e.g. ``'range'``, ``'iterator'``, ``'cycle_list'``)."""
+    repr: str
+    """The ``repr()`` string of the original value."""
+
+    def __new__(cls, type_name: str, repr: str) -> Self: ...
+    def __repr__(self) -> str: ...
+    def __str__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
 
 @final
 class MountDirectory:

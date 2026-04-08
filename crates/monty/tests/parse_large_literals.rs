@@ -106,7 +106,7 @@ fn monty_object_repr_or_error_success() {
     let code = "range(0, 10, 2)".to_string();
     let run = MontyRun::new(code, "test.py", vec![]).expect("should parse");
     let result = run.run_no_limits(vec![]).expect("should run");
-    let MontyObject::Repr(s) = result else {
+    let MontyObject::Repr { repr: s, .. } = result else {
         panic!("expected MontyObject::Repr, got: {result:?}");
     };
     assert_eq!(s, "range(0, 10, 2)");
@@ -118,7 +118,7 @@ fn monty_object_repr_or_error_slice() {
     let code = "slice(1, 10, 2)".to_string();
     let run = MontyRun::new(code, "test.py", vec![]).expect("should parse");
     let result = run.run_no_limits(vec![]).expect("should run");
-    let MontyObject::Repr(s) = result else {
+    let MontyObject::Repr { repr: s, .. } = result else {
         panic!("expected MontyObject::Repr, got: {result:?}");
     };
     assert_eq!(s, "slice(1, 10, 2)");
@@ -130,7 +130,7 @@ fn monty_object_repr_or_error_dict_keys() {
     let code = "{1: 'a', 2: 'b'}.keys()".to_string();
     let run = MontyRun::new(code, "test.py", vec![]).expect("should parse");
     let result = run.run_no_limits(vec![]).expect("should run");
-    let MontyObject::Repr(s) = result else {
+    let MontyObject::Repr { repr: s, .. } = result else {
         panic!("expected MontyObject::Repr, got: {result:?}");
     };
     assert_eq!(s, "dict_keys([1, 2])");
@@ -144,7 +144,7 @@ fn monty_object_repr_or_error_with_huge_int() {
     let code = "d = {10**5000: 'v'}\nd.keys()".to_string();
     let run = MontyRun::new(code, "test.py", vec![]).expect("should parse");
     let result = run.run_no_limits(vec![]).expect("should run, not raise");
-    let MontyObject::Repr(s) = result else {
+    let MontyObject::Repr { repr: s, .. } = result else {
         panic!("expected MontyObject::Repr, got: {result:?}");
     };
     assert_eq!(

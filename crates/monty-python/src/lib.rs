@@ -12,6 +12,7 @@ mod external;
 mod limits;
 mod monty_cls;
 mod mount;
+mod non_serializable;
 mod repl;
 mod serialization;
 
@@ -21,6 +22,7 @@ use std::sync::OnceLock;
 pub use exceptions::{MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
 pub use monty_cls::{PyFunctionSnapshot, PyFutureSnapshot, PyMonty, PyMontyComplete, PyNameLookupSnapshot};
 pub use mount::PyMountDirectory;
+pub use non_serializable::PyNonSerializable;
 use pyo3::prelude::*;
 pub use repl::PyMontyRepl;
 
@@ -68,6 +70,8 @@ mod _monty {
     use super::PyMountDirectory as MountDirectory;
     #[pymodule_export]
     use super::PyNameLookupSnapshot as NameLookupSnapshot;
+    #[pymodule_export]
+    use super::PyNonSerializable as NonSerializable;
     use super::get_version;
     #[pymodule_export]
     use super::serialization::load_repl_snapshot;

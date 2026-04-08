@@ -292,15 +292,21 @@ print(42)
 
 
 def test_structured_print_non_serializable_fallback() -> None:
-    """Non-JSON-serializable types fall back to repr() strings via MontyObject::Repr."""
+    """Non-JSON-serializable types produce NonSerializable objects."""
     code = 'print(range(5))'
     m = pydantic_monty.Monty(code)
     calls, callback = make_structured_collector()
     m.run(structured_print_callback=callback)
     assert len(calls) == snapshot(1)
     _, objects, _, _ = calls[0]
-    # range() is not JSON-serializable, so it falls back to repr()
-    assert objects == snapshot(['range(0, 5)'])
+    # range() is not JSON-serializable, so it becomes NonSerializable
+    assert len(objects) == 1
+    obj = objects[0]
+    assert isinstance(obj, pydantic_monty.NonSerializable)
+    assert obj.type_name == snapshot('range')
+    assert obj.repr == snapshot('range(0, 5)')
+    # str() returns the repr string for backward compatibility
+    assert str(obj) == snapshot('range(0, 5)')
 
 
 def test_structured_print_both_callbacks_error() -> None:
@@ -328,3 +334,36 @@ def test_structured_print_repl_feed_start() -> None:
     result = repl.feed_start('print(1, 2)', structured_print_callback=callback)
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert calls == snapshot([('stdout', [1, 2], ' ', '\n')])
+
+
+def test_non_serializable_isinstance_check() -> None:
+    """NonSerializable can be detected with isinstance() in callback."""
+    code = 'print(1, range(3), "hello")'
+    m = pydantic_monty.Monty(code)
+    calls, callback = make_structured_collector()
+    m.run(structured_print_callback=callback)
+    _, objects, _, _ = calls[0]
+    assert not isinstance(objects[0], pydantic_monty.NonSerializable)
+    assert isinstance(objects[1], pydantic_monty.NonSerializable)
+    assert not isinstance(objects[2], pydantic_monty.NonSerializable)
+
+
+def test_non_serializable_equality() -> None:
+    """NonSerializable objects support equality comparison."""
+    a = pydantic_monty.NonSerializable('range', 'range(0, 5)')
+    b = pydantic_monty.NonSerializable('range', 'range(0, 5)')
+    c = pydantic_monty.NonSerializable('iterator', '<iterator>')
+    assert a == b
+    assert a != c
+
+
+def test_non_serializable_iterator() -> None:
+    """Iterators produce NonSerializable with type_name='iterator'."""
+    code = 'print(iter([1, 2, 3]))'
+    m = pydantic_monty.Monty(code)
+    calls, callback = make_structured_collector()
+    m.run(structured_print_callback=callback)
+    _, objects, _, _ = calls[0]
+    obj = objects[0]
+    assert isinstance(obj, pydantic_monty.NonSerializable)
+    assert obj.type_name == snapshot('iterator')

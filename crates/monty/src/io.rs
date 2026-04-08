@@ -101,7 +101,7 @@ impl PrintWriter<'_> {
     /// JSON-serializable types (int, str, float, bool, None, list, dict, tuple)
     /// are passed as their native `MontyObject` variants. Non-serializable types
     /// (functions, iterators, etc.) are represented as `MontyObject::Repr` with
-    /// their `repr()` string.
+    /// a type name and their `repr()` string.
     pub fn stdout_write_structured(
         &mut self,
         objects: Vec<MontyObject>,
