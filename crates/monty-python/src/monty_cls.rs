@@ -133,7 +133,7 @@ impl PyMonty {
     /// # Raises
     /// Various Python exceptions matching what the code would raise
     #[expect(clippy::too_many_arguments)]
-    #[pyo3(signature = (*, inputs=None, limits=None, external_functions=None, print_callback=None, mount=None, os=None))]
+    #[pyo3(signature = (*, inputs=None, limits=None, external_functions=None, print_callback=None, structured_print_callback=None, mount=None, os=None))]
     fn run(
         &self,
         py: Python<'_>,
@@ -141,6 +141,7 @@ impl PyMonty {
         limits: Option<&Bound<'_, PyDict>>,
         external_functions: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
+        structured_print_callback: Option<&Bound<'_, PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
@@ -151,14 +152,23 @@ impl PyMonty {
         // Build the internal mount table from mount + os parameters.
         let os_handler = OsHandler::from_run_args(py, mount, os)?;
 
-        // Build print writer
-        let mut print_cb;
-        let print_writer = match print_callback {
-            Some(cb) => {
-                print_cb = CallbackStringPrint::new(cb);
-                PrintWriter::Callback(&mut print_cb)
-            }
-            None => PrintWriter::Stdout,
+        // Validate and build print writer
+        if print_callback.is_some() && structured_print_callback.is_some() {
+            return Err(PyValueError::new_err(
+                "cannot specify both 'print_callback' and 'structured_print_callback'",
+            ));
+        }
+
+        let mut string_cb;
+        let mut structured_cb;
+        let print_writer = if let Some(cb) = structured_print_callback {
+            structured_cb = CallbackStructuredPrint::new(cb, self.dc_registry.clone_ref(py));
+            PrintWriter::Callback(&mut structured_cb)
+        } else if let Some(cb) = print_callback {
+            string_cb = CallbackStringPrint::new(cb);
+            PrintWriter::Callback(&mut string_cb)
+        } else {
+            PrintWriter::Stdout
         };
 
         // Run with appropriate tracker type (must branch due to different generic types)
@@ -171,26 +181,40 @@ impl PyMonty {
         }
     }
 
-    #[pyo3(signature = (*, inputs=None, limits=None, print_callback=None))]
+    #[pyo3(signature = (*, inputs=None, limits=None, print_callback=None, structured_print_callback=None))]
     fn start<'py>(
         &self,
         py: Python<'py>,
         inputs: Option<&Bound<'py, PyDict>>,
         limits: Option<&Bound<'py, PyDict>>,
-        print_callback: Option<Bound<'_, PyAny>>,
+        print_callback: Option<Py<PyAny>>,
+        structured_print_callback: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         // Clone the Arc handle — shares the same underlying registry
         let dc_registry = self.dc_registry.clone_ref(py);
         let input_values = self.extract_input_values(inputs, &dc_registry)?;
 
-        // Build print writer - CallbackStringPrint is Send so GIL can be released
-        let mut print_cb;
-        let print_writer = match &print_callback {
-            Some(cb) => {
-                print_cb = CallbackStringPrint::new(cb);
-                PrintWriter::Callback(&mut print_cb)
+        // Resolve the two callback options into a single Option<Py<PyAny>>
+        let resolved_callback = resolve_print_callback(
+            py,
+            print_callback,
+            structured_print_callback,
+            &dc_registry,
+        )?;
+
+        // Build print writer
+        let mut string_cb;
+        let mut structured_cb;
+        let print_writer = if let Some(ref cb) = resolved_callback {
+            if let Some((real_cb, dc_reg)) = unwrap_structured_callback(py, cb) {
+                structured_cb = CallbackStructuredPrint::from_py(real_cb, dc_reg);
+                PrintWriter::Callback(&mut structured_cb)
+            } else {
+                string_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut string_cb)
             }
-            None => PrintWriter::Stdout,
+        } else {
+            PrintWriter::Stdout
         };
 
         let runner = self.runner.clone();
@@ -212,12 +236,7 @@ impl PyMonty {
             let tracker = PySignalTracker::new(NoLimitTracker);
             EitherProgress::NoLimit(start_impl!(tracker))
         };
-        progress.progress_or_complete(
-            py,
-            self.script_name.clone(),
-            print_callback.map(Bound::unbind),
-            dc_registry,
-        )
+        progress.progress_or_complete(py, self.script_name.clone(), resolved_callback, dc_registry)
     }
 
     /// Runs the code asynchronously, supporting async external functions.
@@ -232,7 +251,8 @@ impl PyMonty {
     ///
     /// # Raises
     /// Various Python exceptions matching what the code would raise.
-    #[pyo3(signature = (*, inputs=None, limits=None, external_functions=None, print_callback=None, os=None))]
+    #[expect(clippy::too_many_arguments)]
+    #[pyo3(signature = (*, inputs=None, limits=None, external_functions=None, print_callback=None, structured_print_callback=None, os=None))]
     fn run_async<'py>(
         &self,
         py: Python<'py>,
@@ -240,6 +260,7 @@ impl PyMonty {
         limits: Option<&Bound<'_, PyDict>>,
         external_functions: Option<&Bound<'_, PyDict>>,
         print_callback: Option<Py<PyAny>>,
+        structured_print_callback: Option<Py<PyAny>>,
         os: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         if let Some(ref os_cb) = os
@@ -257,6 +278,7 @@ impl PyMonty {
         let dc_registry = self.dc_registry.clone_ref(py);
         let ext_fns = external_functions.map(|d| d.clone().unbind());
         let runner = self.runner.clone();
+        let print_callback = resolve_print_callback(py, print_callback, structured_print_callback, &dc_registry)?;
         if let Some(limits) = limits {
             Self::run_async_with_tracker(
                 py,
@@ -1651,6 +1673,67 @@ fn list_str(arg: Option<&Bound<'_, PyList>>, name: &str) -> PyResult<Vec<String>
     }
 }
 
+/// Opaque marker that wraps a structured print callback for threading through
+/// the snapshot/resume chain as a regular `Py<PyAny>`.
+///
+/// When `with_print_writer` receives a `Py<PyAny>` that is an instance of this
+/// class, it extracts the inner callback and creates a [`CallbackStructuredPrint`]
+/// instead of a [`CallbackStringPrint`]. This avoids changing the `Option<Py<PyAny>>`
+/// type threaded through every snapshot class.
+#[pyclass]
+pub(crate) struct StructuredCallbackMarker {
+    pub callback: Py<PyAny>,
+    pub dc_registry: DcRegistry,
+}
+
+/// Wraps a structured print callback in a [`StructuredCallbackMarker`] so it can
+/// be threaded through the existing `Option<Py<PyAny>>` snapshot chain.
+pub(crate) fn wrap_structured_callback(
+    py: Python<'_>,
+    callback: Py<PyAny>,
+    dc_registry: DcRegistry,
+) -> PyResult<Py<PyAny>> {
+    let marker = StructuredCallbackMarker { callback, dc_registry };
+    Ok(Py::new(py, marker)?.into_any())
+}
+
+/// Checks if a `Py<PyAny>` is a [`StructuredCallbackMarker`] and extracts its
+/// contents if so. Returns `None` for regular string callbacks.
+pub(crate) fn unwrap_structured_callback(py: Python<'_>, cb: &Py<PyAny>) -> Option<(Py<PyAny>, DcRegistry)> {
+    let bound = cb.bind(py);
+    if let Ok(marker) = bound.cast::<StructuredCallbackMarker>() {
+        let borrowed = marker.borrow();
+        Some((borrowed.callback.clone_ref(py), borrowed.dc_registry.clone_ref(py)))
+    } else {
+        None
+    }
+}
+
+/// Validates that at most one of `print_callback` / `structured_print_callback` is set,
+/// and wraps the structured variant in a [`StructuredCallbackMarker`] for threading.
+///
+/// Returns the resolved callback as `Option<Py<PyAny>>` that can be passed through
+/// the existing snapshot chain. If a structured callback is provided, it is wrapped
+/// in a marker so [`with_print_writer`](crate::async_dispatch::with_print_writer)
+/// can detect and handle it correctly.
+pub(crate) fn resolve_print_callback(
+    py: Python<'_>,
+    print_callback: Option<Py<PyAny>>,
+    structured_print_callback: Option<Py<PyAny>>,
+    dc_registry: &DcRegistry,
+) -> PyResult<Option<Py<PyAny>>> {
+    if print_callback.is_some() && structured_print_callback.is_some() {
+        return Err(PyValueError::new_err(
+            "cannot specify both 'print_callback' and 'structured_print_callback'",
+        ));
+    }
+    if let Some(cb) = structured_print_callback {
+        Ok(Some(wrap_structured_callback(py, cb, dc_registry.clone_ref(py))?))
+    } else {
+        Ok(print_callback)
+    }
+}
+
 /// A `PrintWriter` implementation that calls a Python callback for each print output.
 ///
 /// This struct holds a GIL-independent `Py<PyAny>` reference to the callback,
@@ -1683,6 +1766,70 @@ impl PrintWriterCallback for CallbackStringPrint {
     fn stdout_push(&mut self, end: char) -> Result<(), MontyException> {
         Python::attach(|py| {
             self.0.bind(py).call1(("stdout", end.to_string()))?;
+            Ok::<_, PyErr>(())
+        })
+        .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e)))
+    }
+}
+
+/// A `PrintWriter` implementation that calls a Python callback once per `print()`
+/// invocation with all positional arguments as structured Python objects.
+///
+/// The callback signature is `(stream: str, objects: list[Any], sep: str, end: str)`.
+/// JSON-serializable types (int, str, float, bool, None, list, dict, tuple) are
+/// passed as native Python objects. Non-serializable types fall back to their `repr()` string.
+#[derive(Debug)]
+pub(crate) struct CallbackStructuredPrint {
+    callback: Py<PyAny>,
+    dc_registry: DcRegistry,
+}
+
+impl CallbackStructuredPrint {
+    /// Creates a new `CallbackStructuredPrint` from a borrowed Python callback.
+    fn new(callback: &Bound<'_, PyAny>, dc_registry: DcRegistry) -> Self {
+        Self {
+            callback: callback.clone().unbind(),
+            dc_registry,
+        }
+    }
+
+    /// Creates a new `CallbackStructuredPrint` from an owned `Py<PyAny>`.
+    pub(crate) fn from_py(callback: Py<PyAny>, dc_registry: DcRegistry) -> Self {
+        Self { callback, dc_registry }
+    }
+}
+
+impl PrintWriterCallback for CallbackStructuredPrint {
+    fn stdout_write(&mut self, _output: Cow<'_, str>) -> Result<(), MontyException> {
+        // Not used — structured mode bypasses per-fragment writes.
+        Ok(())
+    }
+
+    fn stdout_push(&mut self, _end: char) -> Result<(), MontyException> {
+        // Not used — structured mode bypasses per-fragment writes.
+        Ok(())
+    }
+
+    fn wants_structured(&self) -> bool {
+        true
+    }
+
+    fn stdout_write_structured(
+        &mut self,
+        objects: Vec<MontyObject>,
+        sep: &str,
+        end: &str,
+    ) -> Result<(), MontyException> {
+        let dc_registry = &self.dc_registry;
+        Python::attach(|py| {
+            let py_objects = PyList::new(
+                py,
+                objects
+                    .iter()
+                    .map(|obj| monty_to_py(py, obj, dc_registry))
+                    .collect::<PyResult<Vec<_>>>()?,
+            )?;
+            self.callback.bind(py).call1(("stdout", py_objects, sep, end))?;
             Ok::<_, PyErr>(())
         })
         .map_err(|e| Python::attach(|py| exc_py_to_monty(py, &e)))

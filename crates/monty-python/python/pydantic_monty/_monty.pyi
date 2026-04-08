@@ -107,6 +107,7 @@ class Monty:
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
         mount: MountDirectory | list[MountDirectory] | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
@@ -119,7 +120,10 @@ class Monty:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
             external_functions: Dict of external function callbacks
-            print_callback: Optional callback for print output
+            print_callback: Optional callback for print output (per-fragment strings)
+            structured_print_callback: Optional callback for structured print output
+                (called once per ``print()`` with all args as native Python objects).
+                Cannot be used together with ``print_callback``.
             os: Optional callback for OS calls.
                 Called with (function_name, args) where function_name is like 'Path.exists'
                 and args is a tuple of arguments. Must return the appropriate value for the
@@ -138,6 +142,7 @@ class Monty:
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
         Start the code execution and return a progress object, or completion.
@@ -168,6 +173,7 @@ class Monty:
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
         os: AbstractOS | None = None,
     ) -> Coroutine[Any, Any, Any]:
         """
@@ -280,6 +286,7 @@ class MontyRepl:
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
         mount: MountDirectory | list[MountDirectory] | None = None,
         os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
@@ -301,6 +308,7 @@ class MontyRepl:
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
         os: AbstractOS | None = None,
     ) -> Coroutine[Any, Any, Any]:
         """
@@ -329,6 +337,7 @@ class MontyRepl:
         *,
         inputs: dict[str, Any] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
         Start executing an incremental snippet, yielding snapshots for external calls.

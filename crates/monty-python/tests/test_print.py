@@ -206,3 +206,125 @@ list(map(print, [1, 2, 3]))
     output, callback = make_print_collector()
     m.run(print_callback=callback)
     assert ''.join(output) == snapshot('1\n2\n3\n')
+
+
+# === structured_print_callback tests ===
+
+
+StructuredCall = tuple[str, list[object], str, str]
+StructuredPrintCallback = Callable[[str, list[object], str, str], None]
+
+
+def make_structured_collector() -> tuple[list[StructuredCall], StructuredPrintCallback]:
+    """Create a structured print callback that collects calls into a list."""
+    calls: list[StructuredCall] = []
+
+    def callback(stream: str, objects: list[object], sep: str, end: str) -> None:
+        assert stream == 'stdout'
+        calls.append((stream, list(objects), sep, end))
+
+    return calls, callback
+
+
+def test_structured_print_basic() -> None:
+    m = pydantic_monty.Monty('print("hello")')
+    calls, callback = make_structured_collector()
+    m.run(structured_print_callback=callback)
+    assert calls == snapshot([('stdout', ['hello'], ' ', '\n')])
+
+
+def test_structured_print_multiple_args() -> None:
+    m = pydantic_monty.Monty('print(1, "hello", [1, 2])')
+    calls, callback = make_structured_collector()
+    m.run(structured_print_callback=callback)
+    assert calls == snapshot([('stdout', [1, 'hello', [1, 2]], ' ', '\n')])
+
+
+def test_structured_print_preserves_types() -> None:
+    m = pydantic_monty.Monty('print(42, 3.14, True, None, "text")')
+    calls, callback = make_structured_collector()
+    m.run(structured_print_callback=callback)
+    assert len(calls) == snapshot(1)
+    _, objects, _, _ = calls[0]
+    assert objects == snapshot([42, 3.14, True, None, 'text'])
+    assert type(objects[0]) is int
+    assert type(objects[1]) is float
+    assert type(objects[2]) is bool
+    assert objects[3] is None
+    assert type(objects[4]) is str
+
+
+def test_structured_print_nested_containers() -> None:
+    m = pydantic_monty.Monty('print({"a": [1, 2]}, (3, 4))')
+    calls, callback = make_structured_collector()
+    m.run(structured_print_callback=callback)
+    assert calls == snapshot([('stdout', [{'a': [1, 2]}, (3, 4)], ' ', '\n')])
+
+
+def test_structured_print_custom_sep_end() -> None:
+    m = pydantic_monty.Monty('print(1, 2, 3, sep="-", end="!")')
+    calls, callback = make_structured_collector()
+    m.run(structured_print_callback=callback)
+    assert calls == snapshot([('stdout', [1, 2, 3], '-', '!')])
+
+
+def test_structured_print_empty() -> None:
+    m = pydantic_monty.Monty('print()')
+    calls, callback = make_structured_collector()
+    m.run(structured_print_callback=callback)
+    assert calls == snapshot([('stdout', [], ' ', '\n')])
+
+
+def test_structured_print_multiple_calls() -> None:
+    code = """
+print("line 1")
+print(42)
+"""
+    m = pydantic_monty.Monty(code)
+    calls, callback = make_structured_collector()
+    m.run(structured_print_callback=callback)
+    assert calls == snapshot(
+        [
+            ('stdout', ['line 1'], ' ', '\n'),
+            ('stdout', [42], ' ', '\n'),
+        ]
+    )
+
+
+def test_structured_print_non_serializable_fallback() -> None:
+    """Non-JSON-serializable types fall back to repr() strings via MontyObject::Repr."""
+    code = 'print(range(5))'
+    m = pydantic_monty.Monty(code)
+    calls, callback = make_structured_collector()
+    m.run(structured_print_callback=callback)
+    assert len(calls) == snapshot(1)
+    _, objects, _, _ = calls[0]
+    # range() is not JSON-serializable, so it falls back to repr()
+    assert objects == snapshot(['range(0, 5)'])
+
+
+def test_structured_print_both_callbacks_error() -> None:
+    """Providing both print_callback and structured_print_callback should raise."""
+    m = pydantic_monty.Monty('print("hello")')
+    with pytest.raises(ValueError, match='cannot specify both'):
+        m.run(
+            print_callback=lambda stream, text: None,
+            structured_print_callback=lambda stream, objects, sep, end: None,
+        )
+
+
+def test_structured_print_repl_feed_run() -> None:
+    """Test structured_print_callback works with MontyRepl.feed_run."""
+    repl = pydantic_monty.MontyRepl()
+    calls, callback = make_structured_collector()
+    repl.feed_run('print(1, "two", [3])', structured_print_callback=callback)
+    assert calls == snapshot([('stdout', [1, 'two', [3]], ' ', '\n')])
+
+
+def test_structured_print_repl_feed_start() -> None:
+    """Test structured_print_callback works with MontyRepl.feed_start."""
+    repl = pydantic_monty.MontyRepl()
+    calls, callback = make_structured_collector()
+    result = repl.feed_start('print(1, 2)', structured_print_callback=callback)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert calls == snapshot([('stdout', [1, 2], ' ', '\n')])

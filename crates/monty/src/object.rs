@@ -542,7 +542,7 @@ impl MontyObject {
         }
     }
 
-    fn from_value(object: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> Self {
+    pub(crate) fn from_value(object: &Value, vm: &VM<'_, '_, impl ResourceTracker>) -> Self {
         let mut visited = AHashSet::new();
         Self::from_value_inner(object, vm, &mut visited)
     }
