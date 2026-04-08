@@ -60,7 +60,8 @@ uv run python -m pytest crates/monty-python/tests/test_... -v -k "test_name"
 
 ## Commits
 
-Update this table with every commit related to this extension.
+After each commit, record its hash here in a separate follow-up commit
+(to avoid a chicken-and-egg problem where amending changes the hash).
 
 | Hash | Description |
 |------|-------------|
