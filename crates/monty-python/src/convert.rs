@@ -237,8 +237,15 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
             .map(Bound::into_any)
             .map(Bound::unbind),
         MontyObject::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
-        // Return Python's built-in type object
-        MontyObject::Type(t) => import_builtins(py)?.getattr(py, t.to_string()),
+        // Return Python's built-in type object when possible, otherwise a string representation.
+        // Non-builtin types (e.g. Dataclass, DateTime) can't be looked up from the builtins module.
+        MontyObject::Type(t) => {
+            if let Some(name) = t.builtin_name() {
+                import_builtins(py)?.getattr(py, name)
+            } else {
+                Ok(PyString::new(py, &format!("<class '{t}'>")).into_any().unbind())
+            }
+        }
         MontyObject::BuiltinFunction(f) => import_builtins(py)?.getattr(py, f.to_string()),
         // Dataclass - use registry to reconstruct original type if available
         MontyObject::Dataclass {
@@ -296,6 +303,15 @@ pub fn monty_to_py_structured(py: Python<'_>, obj: &MontyObject, dc_registry: &D
         MontyObject::Function { name, .. } => Ok(PyNonSerializable {
             type_name: "function".to_owned(),
             repr: name.clone(),
+        }
+        .into_pyobject(py)?
+        .into_any()
+        .unbind()),
+        // Non-builtin type objects can't be looked up from the builtins module,
+        // so wrap them as NonSerializable instead of delegating to monty_to_py.
+        MontyObject::Type(t) if t.builtin_name().is_none() => Ok(PyNonSerializable {
+            type_name: "type".to_owned(),
+            repr: format!("<class '{t}'>"),
         }
         .into_pyobject(py)?
         .into_any()

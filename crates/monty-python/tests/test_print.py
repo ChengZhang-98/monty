@@ -384,3 +384,44 @@ def test_structured_print_after_resume() -> None:
     result = result.resume(return_value=42)
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert calls == snapshot([('stdout', ['result: 42'], ' ', '\n')])
+
+
+def test_structured_print_type_of_dataclass() -> None:
+    """type() on a registered dataclass doesn't crash structured_print_callback (regression).
+
+    Previously, printing type() of a dataclass instance via structured_print_callback
+    raised AttributeError because the conversion tried to look up 'dataclass' in
+    Python's builtins module.
+    """
+    from dataclasses import dataclass
+
+    @dataclass(frozen=True)
+    class WebFetchResult:
+        status_code: int
+        content: str
+
+    repl = pydantic_monty.MontyRepl(dataclass_registry=[WebFetchResult])
+    calls, callback = make_structured_collector()
+
+    # Assign a dataclass instance via external function resume
+    result = repl.feed_start(
+        'page = fetch_page()',
+        structured_print_callback=callback,
+    )
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    result = result.resume(return_value=WebFetchResult(status_code=200, content='hello'))
+    assert isinstance(result, pydantic_monty.MontyComplete)
+
+    # print(type(page)) should not raise
+    calls.clear()
+    result = repl.feed_start(
+        'print(type(page))',
+        structured_print_callback=callback,
+    )
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert len(calls) == snapshot(1)
+    _, objects, _, _ = calls[0]
+    obj = objects[0]
+    assert isinstance(obj, pydantic_monty.NonSerializable)
+    assert obj.type_name == snapshot('type')
+    assert obj.repr == snapshot("<class 'dataclass'>")
