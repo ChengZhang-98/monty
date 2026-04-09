@@ -367,3 +367,20 @@ def test_non_serializable_iterator() -> None:
     obj = objects[0]
     assert isinstance(obj, pydantic_monty.NonSerializable)
     assert obj.type_name == snapshot('iterator')
+
+
+def test_structured_print_after_resume() -> None:
+    """Structured callback works after feed_start + resume (regression test).
+
+    Previously, resume() always created CallbackStringPrint even when the stored
+    callback was a StructuredCallbackMarker, causing TypeError when print() was
+    called with non-literal arguments after resume.
+    """
+    repl = pydantic_monty.MontyRepl()
+    calls, callback = make_structured_collector()
+    code = 'x = get_value()\nprint(f"result: {x}")'
+    result = repl.feed_start(code, structured_print_callback=callback)
+    assert isinstance(result, pydantic_monty.FunctionSnapshot)
+    result = result.resume(return_value=42)
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert calls == snapshot([('stdout', ['result: 42'], ' ', '\n')])

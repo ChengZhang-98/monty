@@ -1047,13 +1047,18 @@ impl PyFunctionSnapshot {
         let external_result = extract_external_result(py, kwargs, ARGS_ERROR, &self.dc_registry, self.call_id)?;
 
         // Build print writer before detaching - clone_ref needs py token
-        let mut print_cb;
-        let print_writer = match &self.print_callback {
-            Some(cb) => {
-                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
-                PrintWriter::Callback(&mut print_cb)
+        let mut string_cb;
+        let mut structured_cb;
+        let print_writer = if let Some(ref cb) = self.print_callback {
+            if let Some((real_cb, dc_reg)) = unwrap_structured_callback(py, cb) {
+                structured_cb = CallbackStructuredPrint::from_py(real_cb, dc_reg);
+                PrintWriter::Callback(&mut structured_cb)
+            } else {
+                string_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut string_cb)
             }
-            None => PrintWriter::Stdout,
+        } else {
+            PrintWriter::Stdout
         };
         // wrap print_writer in SendWrapper so that it can be accessed inside the py.detach calls despite
         // no `Send` bound - py.detach() is overly restrictive to prevent `Bound` types going inside
@@ -1311,13 +1316,18 @@ impl PyNameLookupSnapshot {
         };
 
         // Build print writer before detaching - clone_ref needs py token
-        let mut print_cb;
-        let print_writer = match &self.print_callback {
-            Some(cb) => {
-                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
-                PrintWriter::Callback(&mut print_cb)
+        let mut string_cb;
+        let mut structured_cb;
+        let print_writer = if let Some(ref cb) = self.print_callback {
+            if let Some((real_cb, dc_reg)) = unwrap_structured_callback(py, cb) {
+                structured_cb = CallbackStructuredPrint::from_py(real_cb, dc_reg);
+                PrintWriter::Callback(&mut structured_cb)
+            } else {
+                string_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut string_cb)
             }
-            None => PrintWriter::Stdout,
+        } else {
+            PrintWriter::Stdout
         };
         let mut print_writer = SendWrapper::new(print_writer);
 
@@ -1540,13 +1550,18 @@ impl PyFutureSnapshot {
             .collect::<PyResult<Vec<_>>>()?;
 
         // Build print writer before detaching - clone_ref needs py token
-        let mut print_cb;
-        let print_writer = match &self.print_callback {
-            Some(cb) => {
-                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
-                PrintWriter::Callback(&mut print_cb)
+        let mut string_cb;
+        let mut structured_cb;
+        let print_writer = if let Some(ref cb) = self.print_callback {
+            if let Some((real_cb, dc_reg)) = unwrap_structured_callback(py, cb) {
+                structured_cb = CallbackStructuredPrint::from_py(real_cb, dc_reg);
+                PrintWriter::Callback(&mut structured_cb)
+            } else {
+                string_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
+                PrintWriter::Callback(&mut string_cb)
             }
-            None => PrintWriter::Stdout,
+        } else {
+            PrintWriter::Stdout
         };
         let mut print_writer = SendWrapper::new(print_writer);
 

@@ -175,6 +175,25 @@ Tests cover:
 | `caeeeaf` | Add structured_print_callback for typed print output |
 | `8f00eae` | Document structured_print_callback in all .pyi docstrings |
 
+## Known Issues (Fixed)
+
+### `StructuredCallbackMarker` not callable after resume
+
+**Bug**: When `structured_print_callback` was passed to `feed_start()`, calling
+`print()` with non-literal arguments (e.g. f-strings with variables) after
+`resume()` raised `TypeError: 'builtins.StructuredCallbackMarker' object is not
+callable`.
+
+**Root cause**: The `resume()` methods on `PyFunctionSnapshot`,
+`PyNameLookupSnapshot`, and `PyFutureSnapshot` unconditionally created
+`CallbackStringPrint` from the stored callback, ignoring that it might be a
+`StructuredCallbackMarker`. The marker was passed directly as a Python callable,
+which failed.
+
+**Fix**: All three `resume()` methods now check `unwrap_structured_callback()`
+first, matching the pattern already used in `run()`/`start()` and
+`with_print_writer()`.
+
 ## Future Considerations
 
 - The `load_snapshot` and `load_repl_snapshot` functions also accept
