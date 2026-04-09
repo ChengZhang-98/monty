@@ -104,7 +104,7 @@ assert str(obj) == 'range(0, 5)'  # backward-compatible in string contexts
 | `crates/monty/src/builtins/print.rs` | Branch: if `wants_structured()`, convert Values to MontyObjects and call `stdout_write_structured` once; else existing string path |
 | `crates/monty/src/object.rs` | Made `MontyObject::from_value` `pub(crate)` (was private); changed `Repr(String)` to `Repr { type_name, repr }` |
 | `crates/monty-python/src/non_serializable.rs` | New file: `NonSerializable` pyclass with `type_name` and `repr` fields |
-| `crates/monty-python/src/convert.rs` | Added `monty_to_py_structured()` that wraps `Repr`/`Cycle`/`Function` in `NonSerializable` |
+| `crates/monty-python/src/convert.rs` | Added `monty_to_py_structured()` that wraps `Repr`/`Cycle`/`Function`/non-builtin `Type` in `NonSerializable`; `monty_to_py()` falls back to string repr for non-builtin types |
 | `crates/monty-python/src/monty_cls.rs` | Added `StructuredCallbackMarker` pyclass, `CallbackStructuredPrint` struct, `resolve_print_callback()`, `wrap/unwrap_structured_callback()` |
 | `crates/monty-python/src/async_dispatch.rs` | Updated `with_print_writer` to detect marker and create `CallbackStructuredPrint` |
 | `crates/monty-python/src/repl.rs` | Added `structured_print_callback` param to `feed_run`, `feed_start`, `feed_run_async`; added `make_print_writer_from_callback` helper |
@@ -135,13 +135,17 @@ assert str(obj) == 'range(0, 5)'  # backward-compatible in string contexts
 
 3. **MontyObject → Python conversion**: Uses `monty_to_py_structured()`, which
    delegates to `monty_to_py()` for serializable types but wraps `Repr`, `Cycle`,
-   and `Function` variants in `NonSerializable(type_name, repr)` objects instead
-   of plain strings. This lets consumers use `isinstance(obj, NonSerializable)`
-   to distinguish non-serializable values. The `type_name` field carries the
-   Python type name (e.g. `"range"`, `"iterator"`, `"cycle_list"`), and the
-   `repr` field carries the repr string. `str(obj)` returns the repr for
-   backward compatibility. The general `monty_to_py()` path (used by `run()`
-   return values etc.) still converts these to plain strings.
+   `Function`, and non-builtin `Type` variants in
+   `NonSerializable(type_name, repr)` objects instead of plain strings. This lets
+   consumers use `isinstance(obj, NonSerializable)` to distinguish
+   non-serializable values. The `type_name` field carries the Python type name
+   (e.g. `"range"`, `"iterator"`, `"cycle_list"`, `"type"`), and the `repr`
+   field carries the repr string (e.g. `"<class 'dataclass'>"`). `str(obj)`
+   returns the repr for backward compatibility. The general `monty_to_py()` path
+   (used by `run()` return values etc.) still converts these to plain strings.
+   For `MontyObject::Type`, builtin types (e.g. `int`, `str`) are looked up from
+   Python's `builtins` module, while non-builtin types (e.g. `Dataclass`,
+   `DateTime`) return a `"<class 'name'>"` string.
 
 4. **DcRegistry in marker**: The structured callback needs `DcRegistry` to
    convert dataclass MontyObjects back to proper Python dataclass instances.
@@ -167,6 +171,7 @@ Tests cover:
 - Both-callbacks error
 - MontyRepl.feed_run
 - MontyRepl.feed_start
+- `type()` on dataclass instance → `NonSerializable` (regression test)
 
 ## Commits
 
@@ -193,6 +198,23 @@ which failed.
 **Fix**: All three `resume()` methods now check `unwrap_structured_callback()`
 first, matching the pattern already used in `run()`/`start()` and
 `with_print_writer()`.
+
+### Non-builtin `Type` crashes `monty_to_py`
+
+**Bug**: Printing `type()` of a dataclass instance (or any non-builtin type like
+`DateTime`) via `structured_print_callback` raised `AttributeError` because
+`monty_to_py()` unconditionally looked up the type name in Python's `builtins`
+module. Non-builtin types like `"dataclass"` don't exist there.
+
+**Root cause**: `monty_to_py()` handled `MontyObject::Type(t)` with
+`import_builtins(py)?.getattr(py, t.to_string())`, which fails for any type
+not present in `builtins` (e.g. `Dataclass`, `DateTime`, `JsonValue`).
+
+**Fix**:
+- `monty_to_py()` now checks `t.builtin_name()`: builtins are looked up as
+  before; non-builtins return a `"<class 'name'>"` string.
+- `monty_to_py_structured()` adds an explicit match arm for non-builtin types,
+  wrapping them as `NonSerializable(type_name="type", repr="<class 'name'>")`.
 
 ## Future Considerations
 
