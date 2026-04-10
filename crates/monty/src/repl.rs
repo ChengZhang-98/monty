@@ -695,7 +695,7 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
 
             for (call_id, ext_result) in results {
                 match ext_result {
-                    ExtFunctionResult::Return(obj) => {
+                    ExtFunctionResult::Return(obj, _meta) => {
                         if let Err(e) = vm.resolve_future(call_id, obj) {
                             repl.globals = vm.take_globals();
                             vm.cleanup();
@@ -867,7 +867,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
             );
 
             let vm_result = match ext_result {
-                ExtFunctionResult::Return(obj) => vm.resume(obj),
+                ExtFunctionResult::Return(obj, meta) => vm.resume(obj, meta.as_ref()),
                 ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
                 ExtFunctionResult::Future(raw_call_id) => {
                     let call_id = CallId::new(raw_call_id);
@@ -945,7 +945,7 @@ fn build_repl_progress<T: ResourceTracker>(
     }
 
     match converted {
-        ConvertedExit::Complete(obj) => {
+        ConvertedExit::Complete(obj, _meta) => {
             let Executor { name_map, interns, .. } = executor;
             repl.global_name_map = name_map;
             repl.interns = interns;

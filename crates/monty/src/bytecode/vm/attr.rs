@@ -13,6 +13,10 @@ use crate::{
 impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Loads an attribute from an object and pushes it onto the stack.
     ///
+    /// The caller is responsible for stamping the object's metadata on the result
+    /// after this method returns, since `py_getattr` pushes via the macro which
+    /// uses default metadata.
+    ///
     /// Returns an AttributeError if the attribute doesn't exist.
     pub(super) fn load_attr(&mut self, name_id: StringId) -> Result<CallResult, RunError> {
         let this = self;

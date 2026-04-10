@@ -74,3 +74,4 @@ make lint-py            # ruff format + pyright + stubtest
 | Extension | Branch | Description |
 |-----------|--------|-------------|
 | [structured-print-callback](implemented/structured-print-callback.md) | `feature/structured-print-callback` | Receive `print()` args as typed Python objects |
+| [metadata-propagation](implemented/metadata-propagation.md) | `tiny-beaver-ext` | Track data provenance (producers/consumers/tags) through every value |

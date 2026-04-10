@@ -1542,7 +1542,7 @@ fn collect_child_ids(data: &HeapData, work_list: &mut Vec<HeapId>) {
         }
         HeapData::Cell(cell) => {
             // Cell can contain a reference to another heap value
-            if let Value::Ref(id) = &cell.0 {
+            if let Value::Ref(id) = &cell.value {
                 work_list.push(*id);
             }
         }
@@ -1631,7 +1631,7 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
                 default.py_dec_ref_ids(stack);
             }
         }
-        HeapData::Cell(cell) => cell.0.py_dec_ref_ids(stack),
+        HeapData::Cell(cell) => cell.value.py_dec_ref_ids(stack),
         HeapData::Dataclass(dc) => dc.py_dec_ref_ids(stack),
         HeapData::Iter(iter) => iter.py_dec_ref_ids(stack),
         HeapData::Module(m) => m.py_dec_ref_ids(stack),

@@ -225,7 +225,7 @@ async def main():
 
     let progress = state
         .resume(
-            vec![(call_id, ExtFunctionResult::Return(MontyObject::Int(41)))],
+            vec![(call_id, ExtFunctionResult::Return(MontyObject::Int(41), None))],
             PrintWriter::Stdout,
         )
         .unwrap();

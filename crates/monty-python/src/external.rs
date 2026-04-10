@@ -33,7 +33,7 @@ pub fn dispatch_method_call(
     dc_registry: &DcRegistry,
 ) -> ExtFunctionResult {
     match dispatch_method_call_inner(py, function_name, args, kwargs, dc_registry) {
-        Ok(result) => ExtFunctionResult::Return(result),
+        Ok(result) => ExtFunctionResult::Return(result, None),
         Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
     }
 }
@@ -118,7 +118,7 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
         kwargs: &[(MontyObject, MontyObject)],
     ) -> ExtFunctionResult {
         match self.call_inner(function_name, args, kwargs) {
-            Ok(Some(result)) => ExtFunctionResult::Return(result),
+            Ok(Some(result)) => ExtFunctionResult::Return(result, None),
             Ok(None) => ExtFunctionResult::NotFound(function_name.to_owned()),
             Err(err) => ExtFunctionResult::Error(exc_py_to_monty(self.py, &err)),
         }
@@ -295,7 +295,7 @@ fn result_to_call_result(py: Python<'_>, result: &Bound<'_, PyAny>, dc_registry:
         CallResult::Coroutine(result.clone().unbind())
     } else {
         match py_to_monty(result, dc_registry) {
-            Ok(monty_obj) => CallResult::Sync(ExtFunctionResult::Return(monty_obj)),
+            Ok(monty_obj) => CallResult::Sync(ExtFunctionResult::Return(monty_obj, None)),
             Err(err) => CallResult::Sync(ExtFunctionResult::Error(exc_py_to_monty(py, &err))),
         }
     }
@@ -325,7 +325,7 @@ pub fn py_err_to_ext_result(py: Python<'_>, err: &PyErr) -> ExtFunctionResult {
 /// exception shape regardless of whether the external function was sync or async.
 pub fn py_obj_to_ext_result(py: Python<'_>, obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> ExtFunctionResult {
     match py_to_monty(obj, dc_registry) {
-        Ok(monty_obj) => ExtFunctionResult::Return(monty_obj),
+        Ok(monty_obj) => ExtFunctionResult::Return(monty_obj, None),
         Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
     }
 }

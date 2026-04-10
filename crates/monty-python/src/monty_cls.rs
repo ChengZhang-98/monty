@@ -512,9 +512,9 @@ impl PyMonty {
 
         loop {
             match progress {
-                RunProgress::Complete(result) => {
+                RunProgress::Complete(annotated) => {
                     put_back(mount_table);
-                    return monty_to_py(py, &result, &self.dc_registry);
+                    return monty_to_py(py, &annotated.value, &self.dc_registry);
                 }
                 RunProgress::FunctionCall(call) => {
                     // Dataclass method calls have method_call=true and the first arg is the instance
@@ -628,7 +628,7 @@ where
     EitherFutureSnapshot: FromResolveFutures<T>,
 {
     match progress {
-        RunProgress::Complete(result) => PyMontyComplete::create(py, &result, &dc_registry),
+        RunProgress::Complete(annotated) => PyMontyComplete::create(py, &annotated.value, &dc_registry),
         RunProgress::FunctionCall(call) => {
             PyFunctionSnapshot::function_call(py, call, script_name, print_callback, dc_registry)
         }

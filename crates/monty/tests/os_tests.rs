@@ -15,7 +15,9 @@ use monty::{
 /// The state is resumed with a mock result to properly clean up ref counts.
 fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     match progress {
         RunProgress::OsCall(call) => {
@@ -67,7 +69,9 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
 /// Helper to run code, provide an OS call result, and get the final value.
 fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (OsFunction, Vec<MontyObject>, MontyObject) {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     match progress {
         RunProgress::OsCall(call) => {
@@ -75,7 +79,7 @@ fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (OsFunction, 
             let args = call.args.clone();
             let resumed = call.resume(mock_result, PrintWriter::Stdout).unwrap();
             let final_result = resumed.into_complete().expect("expected Complete after resume");
-            (function, args, final_result)
+            (function, args, final_result.value)
         }
         _ => panic!("expected OsCall, got {progress:?}"),
     }

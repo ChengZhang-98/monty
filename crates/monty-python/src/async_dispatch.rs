@@ -136,8 +136,8 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
 
     loop {
         match progress {
-            RunProgress::Complete(result) => {
-                return Python::attach(|py| monty_to_py(py, &result, &dc_registry));
+            RunProgress::Complete(annotated) => {
+                return Python::attach(|py| monty_to_py(py, &annotated.value, &dc_registry));
             }
             RunProgress::FunctionCall(call) => {
                 let call_result = dispatch_function_call(
@@ -405,7 +405,7 @@ fn dispatch_os_call_py(
             .call1((function.to_string(), py_args_tuple, py_kwargs))
         {
             Ok(result) => match py_to_monty(&result, dc_registry) {
-                Ok(obj) => ExtFunctionResult::Return(obj),
+                Ok(obj) => ExtFunctionResult::Return(obj, None),
                 Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
             },
             Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),

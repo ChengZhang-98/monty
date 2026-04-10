@@ -29,7 +29,7 @@ fn json_output_primitives() {
 #[test]
 fn json_output_list() {
     let ex = MontyRun::new("[1, 'two', 3.0]".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     assert_eq!(
         serde_json::to_string(&result).unwrap(),
         r#"{"List":[{"Int":1},{"String":"two"},{"Float":3.0}]}"#
@@ -39,7 +39,7 @@ fn json_output_list() {
 #[test]
 fn json_output_dict() {
     let ex = MontyRun::new("{'a': 1, 'b': 2}".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     assert_eq!(
         serde_json::to_string(&result).unwrap(),
         r#"{"Dict":[[{"String":"a"},{"Int":1}],[{"String":"b"},{"Int":2}]]}"#
@@ -49,7 +49,7 @@ fn json_output_dict() {
 #[test]
 fn json_output_tuple() {
     let ex = MontyRun::new("(1, 'two')".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     assert_eq!(
         serde_json::to_string(&result).unwrap(),
         r#"{"Tuple":[{"Int":1},{"String":"two"}]}"#
@@ -59,14 +59,14 @@ fn json_output_tuple() {
 #[test]
 fn json_output_bytes() {
     let ex = MontyRun::new("b'hi'".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     assert_eq!(serde_json::to_string(&result).unwrap(), r#"{"Bytes":[104,105]}"#);
 }
 
 #[test]
 fn json_output_ellipsis() {
     let ex = MontyRun::new("...".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     assert_eq!(serde_json::to_string(&result).unwrap(), r#""Ellipsis""#);
 }
 
@@ -98,7 +98,7 @@ fn json_output_repr() {
 fn json_output_cycle_list() {
     // Test JSON serialization of cyclic list
     let ex = MontyRun::new("a = []; a.append(a); a".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     // The cyclic reference becomes MontyObject::Cycle
     assert_eq!(
         serde_json::to_string(&result).unwrap(),
@@ -110,7 +110,7 @@ fn json_output_cycle_list() {
 fn json_output_cycle_dict() {
     // Test JSON serialization of cyclic dict
     let ex = MontyRun::new("d = {}; d['self'] = d; d".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     assert_eq!(
         serde_json::to_string(&result).unwrap(),
         r#"{"Dict":[[{"String":"self"},{"Cycle":[1,"{...}"]}]]}"#
@@ -179,7 +179,7 @@ fn json_roundtrip() {
         vec![],
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     let json = serde_json::to_string(&result).unwrap();
     let parsed: MontyObject = serde_json::from_str(&json).unwrap();
     assert_eq!(result, parsed);
@@ -200,7 +200,7 @@ fn json_roundtrip_empty() {
 fn cycle_equality_same_id() {
     // Multiple references to the same cyclic object should produce equal Cycle values
     let ex = MontyRun::new("a = []; a.append(a); [a, a]".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
 
     if let MontyObject::List(outer) = &result {
         assert_eq!(outer.len(), 2, "outer list should have 2 elements");
@@ -227,7 +227,7 @@ fn cycle_equality_different_ids() {
         vec![],
     )
     .unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
 
     if let MontyObject::List(outer) = &result {
         assert_eq!(outer.len(), 2, "outer list should have 2 elements");

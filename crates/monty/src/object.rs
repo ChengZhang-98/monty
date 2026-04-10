@@ -689,7 +689,7 @@ impl MontyObject {
                     // Cells are internal closure implementation details
                     HeapData::Cell(cell) => {
                         // Show the cell's contents
-                        Self::from_value_inner(&cell.0, vm, visited)
+                        Self::from_value_inner(&cell.value, vm, visited)
                     }
                     HeapData::Closure(..) | HeapData::FunctionDefaults(..) => repr_or_error(object, vm),
                     HeapData::Range(_) => repr_or_error(object, vm),

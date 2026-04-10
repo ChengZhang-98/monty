@@ -190,7 +190,7 @@ fn multiple_inputs_mixed_types() {
 #[test]
 fn no_inputs() {
     let ex = MontyRun::new("42".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(vec![]).unwrap();
+    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     assert_eq!(result, MontyObject::Int(42));
 }
 

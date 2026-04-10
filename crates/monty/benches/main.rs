@@ -17,12 +17,12 @@ use pyo3::prelude::*;
 /// Parses once, then benchmarks repeated execution.
 fn run_monty(bench: &mut Bencher, code: &str, expected: i64) {
     let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
-    let r = ex.run_no_limits(vec![]).unwrap();
+    let r = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, expected);
 
     bench.iter(|| {
-        let r = ex.run_no_limits(vec![]).unwrap();
+        let r = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
         let int_value: i64 = r.as_ref().try_into().unwrap();
         black_box(int_value);
     });
@@ -148,7 +148,7 @@ const PAIR_TUPLES: &str = "len([(i, i + 1) for i in range(100_000)])";
 fn end_to_end_monty(bench: &mut Bencher) {
     bench.iter(|| {
         let ex = MontyRun::new(black_box("1 + 2").to_owned(), "test.py", vec![]).unwrap();
-        let r = ex.run_no_limits(vec![]).unwrap();
+        let r = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
         let int_value: i64 = r.as_ref().try_into().unwrap();
         black_box(int_value);
     });

@@ -47,7 +47,9 @@ fn resolve_as_functions(
 #[test]
 fn resolve_as_function_and_call() {
     let runner = MontyRun::new("x = ext(10); x + 1".to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     // Resolve NameLookup for 'ext' as a function
     let progress = resolve_as_functions(progress).unwrap();
@@ -59,27 +61,31 @@ fn resolve_as_function_and_call() {
 
     // Resume with 42 → code evaluates 42 + 1 = 43
     let result = call.resume(MontyObject::Int(42), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyObject::Int(43));
+    assert_eq!(result.into_complete().unwrap().value, MontyObject::Int(43));
 }
 
 /// NameLookup resolved as an integer constant — no function call involved.
 #[test]
 fn resolve_as_int() {
     let runner = MontyRun::new("PI + 1".to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "PI");
 
     let result = lookup.resume(MontyObject::Int(3), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyObject::Int(4));
+    assert_eq!(result.into_complete().unwrap().value, MontyObject::Int(4));
 }
 
 /// NameLookup resolved as a string value.
 #[test]
 fn resolve_as_string() {
     let runner = MontyRun::new("GREETING + '!'".to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "GREETING");
@@ -88,7 +94,7 @@ fn resolve_as_string() {
         .resume(MontyObject::String("hello".to_string()), PrintWriter::Stdout)
         .unwrap();
     assert_eq!(
-        result.into_complete().unwrap(),
+        result.into_complete().unwrap().value,
         MontyObject::String("hello!".to_string())
     );
 }
@@ -97,40 +103,46 @@ fn resolve_as_string() {
 #[test]
 fn resolve_as_bool() {
     let runner = MontyRun::new("not FLAG".to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "FLAG");
 
     let result = lookup.resume(MontyObject::Bool(true), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyObject::Bool(false));
+    assert_eq!(result.into_complete().unwrap().value, MontyObject::Bool(false));
 }
 
 /// NameLookup resolved as a list.
 #[test]
 fn resolve_as_list() {
     let runner = MontyRun::new("len(ITEMS)".to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "ITEMS");
 
     let items = MontyObject::List(vec![MontyObject::Int(10), MontyObject::Int(20), MontyObject::Int(30)]);
     let result = lookup.resume(items, PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyObject::Int(3));
+    assert_eq!(result.into_complete().unwrap().value, MontyObject::Int(3));
 }
 
 /// NameLookup resolved as a float.
 #[test]
 fn resolve_as_float() {
     let runner = MontyRun::new("TAU + 0.5".to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "TAU");
 
     let result = lookup.resume(MontyObject::Float(6.0), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyObject::Float(6.5));
+    assert_eq!(result.into_complete().unwrap().value, MontyObject::Float(6.5));
 }
 
 // ---------------------------------------------------------------------------
@@ -141,7 +153,9 @@ fn resolve_as_float() {
 #[test]
 fn undefined_raises_name_error() {
     let runner = MontyRun::new("unknown_thing".to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "unknown_thing");
@@ -161,7 +175,7 @@ fn undefined_raises_name_error() {
 #[test]
 fn standard_mode_raises_name_error() {
     let runner = MontyRun::new("unknown_fn(42)".to_owned(), "test.py", vec![]).unwrap();
-    let err = runner.run_no_limits(vec![]).unwrap_err();
+    let err = runner.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("NameError: name 'unknown_fn' is not defined"),
@@ -177,7 +191,9 @@ fn undefined_in_function_raises_name_error() {
     // `missing` is not assigned inside `f()`, so Python treats it as a global lookup
     let code = "def f():\n    return missing\nf()".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "missing");
@@ -202,7 +218,9 @@ fn undefined_in_function_raises_name_error() {
 fn resolved_name_is_cached() {
     let code = "a = ext(1); b = ext(2); a + b".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
-    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let mut progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let mut call_count = 0;
     loop {
@@ -213,7 +231,7 @@ fn resolved_name_is_cached() {
                 let val: i64 = (&call.args[0]).try_into().unwrap();
                 progress = call.resume(MontyObject::Int(val * 10), PrintWriter::Stdout).unwrap();
             }
-            RunProgress::Complete(result) => {
+            RunProgress::Complete(monty::AnnotatedObject { value: result, .. }) => {
                 // ext(1) -> 10, ext(2) -> 20 → 30
                 assert_eq!(result, MontyObject::Int(30));
                 break;
@@ -230,7 +248,9 @@ fn resolved_constant_is_cached() {
     // Use the same constant twice — should only yield one NameLookup
     let code = "X + X".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
-    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let mut progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let mut lookup_count = 0;
     loop {
@@ -240,7 +260,7 @@ fn resolved_constant_is_cached() {
                 lookup_count += 1;
                 progress = lookup.resume(MontyObject::Int(21), PrintWriter::Stdout).unwrap();
             }
-            RunProgress::Complete(result) => {
+            RunProgress::Complete(monty::AnnotatedObject { value: result, .. }) => {
                 assert_eq!(result, MontyObject::Int(42));
                 break;
             }
@@ -260,7 +280,9 @@ fn resolved_constant_is_cached() {
 fn multiple_names_each_looked_up() {
     let code = "a = foo(1); b = bar(2); a + b".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
-    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let mut progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let mut called_names = Vec::new();
     loop {
@@ -270,7 +292,7 @@ fn multiple_names_each_looked_up() {
                 let val: i64 = (&call.args[0]).try_into().unwrap();
                 progress = call.resume(MontyObject::Int(val * 100), PrintWriter::Stdout).unwrap();
             }
-            RunProgress::Complete(result) => {
+            RunProgress::Complete(monty::AnnotatedObject { value: result, .. }) => {
                 // foo(1) -> 100, bar(2) -> 200 → 300
                 assert_eq!(result, MontyObject::Int(300));
                 break;
@@ -288,7 +310,9 @@ fn multiple_names_each_looked_up() {
 fn mixed_function_and_constant_lookups() {
     let code = "ext(OFFSET)".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
-    let mut progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let mut progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let mut looked_up_names = Vec::new();
     loop {
@@ -308,7 +332,7 @@ fn mixed_function_and_constant_lookups() {
                 assert_eq!(call.args, vec![MontyObject::Int(100)]);
                 progress = call.resume(MontyObject::Int(999), PrintWriter::Stdout).unwrap();
             }
-            RunProgress::Complete(result) => {
+            RunProgress::Complete(monty::AnnotatedObject { value: result, .. }) => {
                 assert_eq!(result, MontyObject::Int(999));
                 break;
             }
@@ -327,17 +351,21 @@ fn mixed_function_and_constant_lookups() {
 #[test]
 fn builtins_do_not_trigger_lookup() {
     let runner = MontyRun::new("len([1, 2, 3])".to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
-    assert_eq!(progress.into_complete().unwrap(), MontyObject::Int(3));
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
+    assert_eq!(progress.into_complete().unwrap().value, MontyObject::Int(3));
 }
 
 /// `range` is a builtin — should complete without any NameLookup.
 #[test]
 fn range_builtin_no_lookup() {
     let runner = MontyRun::new("list(range(3))".to_owned(), "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
     assert_eq!(
-        progress.into_complete().unwrap(),
+        progress.into_complete().unwrap().value,
         MontyObject::List(vec![MontyObject::Int(0), MontyObject::Int(1), MontyObject::Int(2)])
     );
 }
@@ -371,7 +399,7 @@ fn input_function_no_lookup() {
     assert_eq!(call.args, vec![MontyObject::Int(10)]);
 
     let result = call.resume(MontyObject::Int(99), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyObject::Int(99));
+    assert_eq!(result.into_complete().unwrap().value, MontyObject::Int(99));
 }
 
 /// A function input assigned to a new variable and called via the alias should
@@ -404,7 +432,7 @@ fn input_function_reassigned_then_called() {
     assert_eq!(call.args, vec![MontyObject::Int(5)]);
 
     let result = call.resume(MontyObject::Int(50), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyObject::Int(50));
+    assert_eq!(result.into_complete().unwrap().value, MontyObject::Int(50));
 }
 
 /// A function input used alongside a name-looked-up constant: the function should
@@ -438,7 +466,7 @@ fn input_function_with_looked_up_arg() {
     assert_eq!(call.args, vec![MontyObject::Int(42)]);
 
     let result = call.resume(MontyObject::Int(100), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyObject::Int(100));
+    assert_eq!(result.into_complete().unwrap().value, MontyObject::Int(100));
 }
 
 /// When a NameLookup resolves to a Function whose name differs from the variable
@@ -451,7 +479,9 @@ fn resolve_function_with_non_interned_name() {
     // named 'not_foobar'. Then `x()` calls the function.
     let code = "x = foobar; x()".to_owned();
     let runner = MontyRun::new(code, "test.py", vec![]).unwrap();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     // First: NameLookup for 'foobar'
     let lookup = progress.into_name_lookup().unwrap();
@@ -478,5 +508,5 @@ fn resolve_function_with_non_interned_name() {
 
     // Resume with a return value
     let result = call.resume(MontyObject::Int(42), PrintWriter::Stdout).unwrap();
-    assert_eq!(result.into_complete().unwrap(), MontyObject::Int(42));
+    assert_eq!(result.into_complete().unwrap().value, MontyObject::Int(42));
 }

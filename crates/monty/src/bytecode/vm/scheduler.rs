@@ -16,6 +16,7 @@ use crate::{
     exception_private::{ExcType, RunError, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapReadOutput, HeapReader},
     intern::FunctionId,
+    metadata::MetadataId,
     parse::CodeRange,
     resource::ResourceTracker,
     value::Value,
@@ -61,6 +62,12 @@ pub(crate) struct Task {
     pub stack: Vec<Value>,
     /// Exception stack for nested except blocks.
     pub exception_stack: Vec<Value>,
+    /// Parallel metadata stack for this task (mirrors `stack`).
+    #[serde(default)]
+    pub meta_stack: Vec<MetadataId>,
+    /// Parallel metadata for the exception stack.
+    #[serde(default)]
+    pub meta_exception_stack: Vec<MetadataId>,
     /// VM-level instruction_ip (for exception table lookup).
     pub instruction_ip: usize,
     /// Coroutine being executed by this task (if any).
@@ -115,6 +122,8 @@ impl Task {
             frames: Vec::new(),
             stack: Vec::new(),
             exception_stack: Vec::new(),
+            meta_stack: Vec::new(),
+            meta_exception_stack: Vec::new(),
             instruction_ip: 0,
             coroutine_id,
             gather_id,
@@ -511,11 +520,13 @@ impl Scheduler {
         for value in mem::take(&mut task.stack) {
             value.drop_with_heap(heap);
         }
+        task.meta_stack.clear();
 
         // Clean up exception stack values
         for value in mem::take(&mut task.exception_stack) {
             value.drop_with_heap(heap);
         }
+        task.meta_exception_stack.clear();
 
         // Restore this task's depth contribution before cleanup,
         // since save_task_context subtracted it.
@@ -578,9 +589,11 @@ impl Scheduler {
             for value in mem::take(&mut task.stack) {
                 value.drop_with_heap(heap);
             }
+            task.meta_stack.clear();
             for value in mem::take(&mut task.exception_stack) {
                 value.drop_with_heap(heap);
             }
+            task.meta_exception_stack.clear();
             if let TaskState::Completed(value) = mem::replace(&mut task.state, TaskState::Ready) {
                 value.drop_with_heap(heap);
             }

@@ -239,7 +239,7 @@ fn run_script(
     }
 
     let input_names = vec![];
-    let inputs = vec![];
+    let inputs: Vec<monty::MontyObject> = vec![];
 
     let runner = match MontyRun::new(code, file_path, input_names) {
         Ok(ex) => ex,
@@ -503,7 +503,7 @@ fn run_until_complete(
 ) -> Result<MontyObject, String> {
     loop {
         match progress {
-            RunProgress::Complete(value) => return Ok(value),
+            RunProgress::Complete(annotated) => return Ok(annotated.value),
             RunProgress::FunctionCall(call) => {
                 let return_value = resolve_external_call(&call.function_name, &call.args)?;
                 progress = call

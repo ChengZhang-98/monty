@@ -1219,7 +1219,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
     if let Expectation::RefCounts(expected) = expectation {
         match MontyRun::new(code.to_owned(), &test_name, vec![]) {
             Ok(ex) => {
-                let result = ex.run_ref_counts(vec![]);
+                let result = ex.run_ref_counts(Vec::<monty::MontyObject>::new());
                 match result {
                     Ok(monty::RefCountOutput {
                         counts,
@@ -1270,7 +1270,11 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
     match MontyRun::new(code.to_owned(), &test_name, vec![]) {
         Ok(ex) => {
             let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-            let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+            let result = ex.run(
+                Vec::<monty::MontyObject>::new(),
+                LimitedTracker::new(limits),
+                PrintWriter::Stdout,
+            );
             match result {
                 Ok(obj) => match expectation {
                     Expectation::ReturnStr(expected) => {
@@ -1615,11 +1619,15 @@ fn try_run_mount_fs_test(path: &Path, code: &str, expectation: &Expectation) -> 
 /// to `Path('/mnt')` so Python code can access the mounted directory.
 fn run_mount_fs_iter_loop(exec: MontyRun, mount_table: &mut MountTable) -> Result<MontyObject, MontyException> {
     let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
+    let mut progress = exec.start(
+        Vec::<monty::MontyObject>::new(),
+        LimitedTracker::new(limits),
+        PrintWriter::Stdout,
+    )?;
 
     loop {
         match progress {
-            RunProgress::Complete(result) => return Ok(result),
+            RunProgress::Complete(annotated) => return Ok(annotated.value),
             RunProgress::FunctionCall(call) => {
                 // No external function calls expected in mount-fs tests.
                 panic!("unexpected FunctionCall in mount-fs test: {}", call.function_name);
@@ -1638,7 +1646,7 @@ fn run_mount_fs_iter_loop(exec: MontyRun, mount_table: &mut MountTable) -> Resul
                 // Dispatch through the mount table first.
                 let result = mount_table.handle_os_call(call.function, &call.args, &call.kwargs);
                 let ext_result = match result {
-                    Some(Ok(obj)) => ExtFunctionResult::Return(obj),
+                    Some(Ok(obj)) => ExtFunctionResult::Return(obj, None),
                     Some(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
                     None => {
                         // Non-filesystem operation — dispatch to the regular handler.
@@ -1662,7 +1670,11 @@ fn run_mount_fs_iter_loop(exec: MontyRun, mount_table: &mut MountTable) -> Resul
 /// - Async functions: `state.run_pending()` creates a future, resolved via `ResolveFutures`
 fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
     let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
+    let mut progress = exec.start(
+        Vec::<monty::MontyObject>::new(),
+        LimitedTracker::new(limits),
+        PrintWriter::Stdout,
+    )?;
 
     // Track pending async calls: (call_id, result_value)
     let mut pending_results: Vec<(u32, MontyObject)> = Vec::new();
@@ -1677,7 +1689,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
         }
 
         match progress {
-            RunProgress::Complete(result) => return Ok(result),
+            RunProgress::Complete(annotated) => return Ok(annotated.value),
             RunProgress::FunctionCall(call) => {
                 // Method calls on dataclasses are dispatched to the host.
                 // Dispatch known methods; return AttributeError for unknown ones.
@@ -1707,7 +1719,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                     .filter_map(|p| {
                         pending_results.iter().position(|(id, _)| id == p).map(|idx| {
                             let (call_id, value) = pending_results.remove(idx);
-                            (call_id, ExtFunctionResult::Return(value))
+                            (call_id, ExtFunctionResult::Return(value, None))
                         })
                     })
                     .collect();

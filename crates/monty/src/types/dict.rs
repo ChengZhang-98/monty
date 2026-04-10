@@ -17,6 +17,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{Interns, StaticStrings},
+    metadata::MetadataId,
     resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{EitherStr, VALUE_SIZE, Value},
@@ -73,7 +74,13 @@ pub(crate) struct Dict {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct DictEntry {
     key: Value,
+    /// Metadata associated with the key value.
+    #[serde(default)]
+    key_meta: MetadataId,
     value: Value,
+    /// Metadata associated with the value.
+    #[serde(default)]
+    value_meta: MetadataId,
     /// the hash is needed here for correct use of insert_unique
     hash: u64,
 }
@@ -150,7 +157,13 @@ impl Dict {
         let hash = key.py_hash(vm)?.expect("json object keys are always hashable strings");
         let opt_index = self.find_json_string_key_index(hash, &key, vm.heap, vm.interns);
 
-        let entry = DictEntry { key, value, hash };
+        let entry = DictEntry {
+            key,
+            key_meta: MetadataId::DEFAULT,
+            value,
+            value_meta: MetadataId::DEFAULT,
+            hash,
+        };
         if let Some(index) = opt_index {
             let old_entry = mem::replace(&mut self.entries[index], entry);
             old_entry.key.drop_with_heap(vm);
@@ -283,12 +296,29 @@ impl Dict {
         value: Value,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
-        vm.heap.protect_mut(self).set(key, value, vm)
+        self.set_with_meta(key, MetadataId::DEFAULT, value, MetadataId::DEFAULT, vm)
+    }
+
+    /// Inserts a key-value pair with associated metadata into the dict.
+    ///
+    /// Behaves identically to [`set`](Dict::set) but also stores `key_meta` and
+    /// `value_meta` alongside the key and value in the underlying [`DictEntry`].
+    pub fn set_with_meta(
+        &mut self,
+        key: Value,
+        key_meta: MetadataId,
+        value: Value,
+        value_meta: MetadataId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
+        vm.heap
+            .protect_mut(self)
+            .set_with_meta(key, key_meta, value, value_meta, vm)
     }
 }
 
 impl<'h> HeapRead<'h, Dict> {
-    /// Sets a key-value pair in the dict.
+    /// Sets a key-value pair in the dict with default metadata.
     ///
     /// The caller transfers ownership of `key` and `value` to the dict. Their refcounts
     /// are NOT incremented here - the caller is responsible for ensuring the refcounts
@@ -301,6 +331,26 @@ impl<'h> HeapRead<'h, Dict> {
         &mut self,
         key: Value,
         value: Value,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<Value>> {
+        self.set_with_meta(key, MetadataId::DEFAULT, value, MetadataId::DEFAULT, vm)
+    }
+
+    /// Sets a key-value pair in the dict with associated metadata.
+    ///
+    /// The caller transfers ownership of `key` and `value` to the dict. Their refcounts
+    /// are NOT incremented here - the caller is responsible for ensuring the refcounts
+    /// were already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
+    ///
+    /// If the key already exists, replaces the old value and returns it (caller now
+    /// owns the old value and is responsible for its refcount).
+    /// Returns Err if key is unhashable.
+    pub fn set_with_meta(
+        &mut self,
+        key: Value,
+        key_meta: MetadataId,
+        value: Value,
+        value_meta: MetadataId,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
         // Track if we're adding a reference for GC optimization
@@ -319,7 +369,13 @@ impl<'h> HeapRead<'h, Dict> {
             }
         };
 
-        let entry = DictEntry { key, value, hash };
+        let entry = DictEntry {
+            key,
+            key_meta,
+            value,
+            value_meta,
+            hash,
+        };
         if let Some(index) = opt_index {
             // Key exists, replace in place to preserve insertion order
             let old_entry = mem::replace(&mut self.get_mut(vm.heap).entries[index], entry);
@@ -400,6 +456,18 @@ impl Dict {
     /// from the underlying storage without copying the dictionary.
     pub fn value_at(&self, index: usize) -> Option<&Value> {
         self.entries.get(index).map(|e| &e.value)
+    }
+
+    /// Returns the metadata for the value at the given index.
+    #[expect(dead_code)]
+    pub fn value_meta_at(&self, index: usize) -> MetadataId {
+        self.entries[index].value_meta
+    }
+
+    /// Returns the metadata for the key at the given index.
+    #[expect(dead_code)]
+    pub fn key_meta_at(&self, index: usize) -> MetadataId {
+        self.entries[index].key_meta
     }
 
     /// Returns the key-value pair at the given iteration index, or None if out of bounds.
@@ -507,8 +575,10 @@ impl<'h> HeapRead<'h, Dict> {
                 for i in 0..len {
                     let entry = &src.get(vm.heap).entries[i];
                     let key = entry.key.clone_with_heap(vm);
+                    let key_meta = entry.key_meta;
                     let value = entry.value.clone_with_heap(vm);
-                    let old_value = self.set(key, value, vm)?;
+                    let value_meta = entry.value_meta;
+                    let old_value = self.set_with_meta(key, key_meta, value, value_meta, vm)?;
                     old_value.drop_with_heap(vm);
                 }
 
@@ -812,8 +882,8 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Dict> {
 
 impl HeapItem for Dict {
     fn py_estimate_size(&self) -> usize {
-        // Dict size: struct overhead + entries (2 Values per entry for key+value)
-        mem::size_of::<Self>() + self.len() * 2 * VALUE_SIZE
+        // Dict size: struct overhead + entries (2 Values + 2 MetadataIds per entry)
+        mem::size_of::<Self>() + self.len() * (2 * VALUE_SIZE + 2 * mem::size_of::<MetadataId>())
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -860,16 +930,34 @@ fn dict_clear<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl Resour
 
 /// Implements Python's `dict.copy()` method.
 ///
-/// Returns a shallow copy of the dict.
+/// Returns a shallow copy of the dict, preserving metadata on keys and values.
 fn dict_copy<'h>(dict: &mut HeapRead<'h, Dict>, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Value> {
-    // Copy all key-value pairs (incrementing refcounts)
-    let pairs: Vec<(Value, Value)> = dict
+    // Collect key-value pairs with their metadata (incrementing refcounts)
+    let entries: Vec<(Value, MetadataId, Value, MetadataId)> = dict
         .get(vm.heap)
+        .entries
         .iter()
-        .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
+        .map(|e| {
+            (
+                e.key.clone_with_heap(vm),
+                e.key_meta,
+                e.value.clone_with_heap(vm),
+                e.value_meta,
+            )
+        })
         .collect();
 
-    let new_dict = Dict::from_pairs(pairs, vm)?;
+    let mut new_dict = Dict::with_capacity(entries.len());
+    let mut dict_guard = HeapGuard::new(new_dict, vm);
+    {
+        let (new_dict, vm) = dict_guard.as_parts_mut();
+        for (key, key_meta, value, value_meta) in entries {
+            if let Some(old_value) = new_dict.set_with_meta(key, key_meta, value, value_meta, vm)? {
+                old_value.drop_with_heap(vm);
+            }
+        }
+    }
+    new_dict = dict_guard.into_inner();
     let heap_id = vm.heap.allocate(HeapData::Dict(new_dict))?;
     Ok(Value::Ref(heap_id))
 }
@@ -918,15 +1006,23 @@ fn dict_merge_from_value(
         if let Value::Ref(id) = other_value
             && let HeapData::Dict(src_dict) = vm.heap.get(*id)
         {
-            // Clone key-value pairs from the source dict.
-            let pairs: Vec<(Value, Value)> = src_dict
+            // Clone key-value pairs with metadata from the source dict.
+            let entries: Vec<(Value, MetadataId, Value, MetadataId)> = src_dict
+                .entries
                 .iter()
-                .map(|(k, v)| (k.clone_with_heap(vm), v.clone_with_heap(vm)))
+                .map(|e| {
+                    (
+                        e.key.clone_with_heap(vm),
+                        e.key_meta,
+                        e.value.clone_with_heap(vm),
+                        e.value_meta,
+                    )
+                })
                 .collect();
 
-            // Apply pairs into the target dict.
-            for (key, value) in pairs {
-                let old_value = dict.set(key, value, vm)?;
+            // Apply entries with metadata into the target dict.
+            for (key, key_meta, value, value_meta) in entries {
+                let old_value = dict.set_with_meta(key, key_meta, value, value_meta, vm)?;
                 old_value.drop_with_heap(vm);
             }
             return Ok(());

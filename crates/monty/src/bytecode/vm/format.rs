@@ -5,6 +5,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, SimpleException},
     fstring::{ParsedFormatSpec, ascii_escape, decode_format_spec, format_string, format_with_spec},
+    metadata::MetadataId,
     resource::{ResourceTracker, check_repeat_size},
     types::{PyTrait, str::allocate_string},
     value::Value,
@@ -12,19 +13,28 @@ use crate::{
 
 impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Builds an f-string by concatenating n string parts from the stack.
+    ///
+    /// The result's metadata is the merge of all parts' metadata, since an f-string
+    /// combines data from all interpolated expressions.
     pub(super) fn build_fstring(&mut self, count: usize) -> Result<(), RunError> {
         let this = self;
-        let parts = this.pop_n(count);
+        let (parts, parts_meta) = this.pop_n_with_meta(count);
         defer_drop!(parts, this);
-        let mut result = String::new();
 
+        // Merge metadata from all f-string parts
+        let mut result_meta = MetadataId::DEFAULT;
+        for &m in &parts_meta {
+            result_meta = this.metadata_store.merge(result_meta, m);
+        }
+
+        let mut result = String::new();
         for part in parts.as_slice() {
             let part_str = part.py_str(this)?;
             result.push_str(&part_str);
         }
 
         let value = allocate_string(result, this.heap)?;
-        this.push(value);
+        this.push_with_meta(value, result_meta);
         Ok(())
     }
 
@@ -52,7 +62,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Pop format spec if present (pushed before value, so popped after)
         let format_spec = if has_format_spec { Some(this.pop()) } else { None };
 
-        let value = this.pop();
+        let (value, value_meta) = this.pop_with_meta();
         defer_drop!(value, this);
 
         // Format with spec applied to original value type, or convert and format as string
@@ -97,7 +107,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         };
 
         let result = allocate_string(formatted, this.heap)?;
-        this.push(result);
+        this.push_with_meta(result, value_meta);
         Ok(())
     }
 

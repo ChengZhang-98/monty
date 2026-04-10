@@ -28,6 +28,10 @@ Key paths to understand for extensions:
   through snapshots.
 - **Session persistence**: `MontyRepl.dump()` / `MontyRepl.load()` for agent
   snapshot serialization. Note: callbacks are **not** serialized.
+- **Metadata propagation**: Every value carries a `MetadataId` tracking
+  provenance (producers/consumers/tags). Metadata flows through the parallel
+  metadata stack in the VM and survives snapshot/resume via `MetadataStore`
+  serialization. See [metadata-propagation](implemented/metadata-propagation.md).
 
 ## Layer Diagram
 
@@ -36,12 +40,15 @@ Key paths to understand for extensions:
 │  Python API         (monty-python/src/)  │  PyO3 classes exposed to Python
 ├──────────────────────────────────────────┤
 │  Type Conversion    (convert.rs)         │  py_to_monty / monty_to_py
+│                                          │  ObjectMetadata ↔ Python dict
 ├──────────────────────────────────────────┤
 │  Dispatch Layer     (external.rs,        │  External functions, async,
 │                      async_dispatch.rs)  │  snapshot resume
 ├──────────────────────────────────────────┤
 │  Core VM            (monty/src/)         │  Bytecode execution, heap,
 │                                          │  PrintWriter, builtins
+│  Metadata           (metadata.rs)        │  MetadataStore, parallel stacks,
+│                                          │  provenance propagation
 └──────────────────────────────────────────┘
 ```
 
@@ -60,6 +67,8 @@ Key paths to understand for extensions:
 | `crates/monty-python/src/async_dispatch.rs` | Async execution loop, `with_print_writer` |
 | `crates/monty-python/src/convert.rs` | `py_to_monty` / `monty_to_py` |
 | `crates/monty-python/src/external.rs` | External function dispatch |
+| `crates/monty/src/metadata.rs` | `MetadataStore`, `MetadataId`, `LabelSet`, provenance types |
+| `crates/monty/src/bytecode/vm/mod.rs` | VM struct with parallel metadata stacks |
 | `crates/monty-python/python/pydantic_monty/_monty.pyi` | Python type stubs |
 | `crates/monty-python/tests/` | Python tests (pytest) |
 
@@ -68,13 +77,13 @@ Key paths to understand for extensions:
 ### Input to Output
 
 ```
-Python inputs (dict)
+Python inputs (dict) + optional ObjectMetadata
   → py_to_monty()        [convert.rs]
-    → Vec<MontyObject>
-      → VM execution     [bytecode, heap]
-        → MontyObject
+    → Vec<MontyObject> + Vec<MetadataId>
+      → VM execution     [bytecode, heap, metadata_store]
+        → MontyObject + MetadataId
           → monty_to_py() [convert.rs]
-            → Python output
+            → Python output + optional ObjectMetadata
 ```
 
 ### MontyObject
