@@ -53,6 +53,30 @@ def test_object_metadata_repr():
     assert 'vault' in r
 
 
+def test_object_metadata_rejects_empty_string_producers():
+    import pytest
+
+    with pytest.raises(ValueError) as exc_info:
+        pydantic_monty.ObjectMetadata(producers=frozenset({'valid', ''}))
+    assert exc_info.value.args[0] == snapshot('producers must not contain empty strings')
+
+
+def test_object_metadata_rejects_empty_string_consumers():
+    import pytest
+
+    with pytest.raises(ValueError) as exc_info:
+        pydantic_monty.ObjectMetadata(consumers=frozenset({''}))
+    assert exc_info.value.args[0] == snapshot('consumers must not contain empty strings')
+
+
+def test_object_metadata_rejects_empty_string_tags():
+    import pytest
+
+    with pytest.raises(ValueError) as exc_info:
+        pydantic_monty.ObjectMetadata(tags=frozenset({''}))
+    assert exc_info.value.args[0] == snapshot('tags must not contain empty strings')
+
+
 # === AnnotatedValue construction ===
 
 

@@ -662,12 +662,23 @@ class ObjectMetadata:
 
     Tracks where a value came from (producers), who may see it (consumers),
     and classification labels (tags).
+
+    **Important:** ``consumers=None`` (the default) means *universal access* —
+    any consumer may see the value. ``consumers=frozenset()`` means *no consumer*
+    is allowed to see the value. These are very different:
+
+    - ``ObjectMetadata()`` → universal consumers (no restrictions)
+    - ``ObjectMetadata(consumers=frozenset())`` → empty consumer set (nobody)
+
+    Label strings must be non-empty.
     """
 
     producers: frozenset[str]
     """Source names that contributed to this value."""
     consumers: frozenset[str] | None
-    """Allowed consumer names, or ``None`` for universal (no restriction)."""
+    """Allowed consumer names. ``None`` = universal (no restriction, any consumer
+    may see the value). ``frozenset()`` = empty set (no consumer is allowed).
+    When two values combine, consumers are *intersected* (most restrictive wins)."""
     tags: frozenset[str]
     """Classification labels (e.g. ``"pii"``, ``"credential"``)."""
 

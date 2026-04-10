@@ -125,6 +125,23 @@ impl List {
         &mut self.items
     }
 
+    /// Extends the list with items and their corresponding metadata.
+    ///
+    /// Maintains the `items.len() == item_metadata.len()` invariant.
+    /// Does NOT update `contains_refs` — caller must do that separately.
+    ///
+    /// # Panics
+    /// Panics in debug mode if `items.len() != metadata.len()`.
+    pub fn extend_with_meta(&mut self, items: Vec<Value>, metadata: Vec<MetadataId>) {
+        debug_assert_eq!(
+            items.len(),
+            metadata.len(),
+            "items/metadata length mismatch in extend_with_meta"
+        );
+        self.items.extend(items);
+        self.item_metadata.extend(metadata);
+    }
+
     /// Returns the number of elements in the list.
     #[must_use]
     pub fn len(&self) -> usize {

@@ -249,7 +249,6 @@ Every container type now stores per-element metadata:
 | `crates/monty/tests/resource_limits.rs` | Updated memory size assertions (containers slightly larger with metadata fields) |
 
 **Not yet wired** (deferred to follow-up):
-- `BinarySubscr` element-level: currently propagates container metadata, not the specific element's. Requires either changing `py_getitem` to return `(Value, MetadataId)` (invasive trait change) or a post-hoc metadata lookup.
 - `ForIter` element-level: iterator would need to yield element metadata from the container.
 - `StoreSubscr` element-level: `py_setitem` would need to accept metadata to store on the element.
 
@@ -275,9 +274,14 @@ Metadata now enters and exits the VM through the public API.
 - `vm.resume(obj, meta)` interns the metadata and pushes it with the value
 - `From<MontyObject>` and `From<AnnotatedObject>` impls for `ExtFunctionResult`
 
-**Python/JS bindings:**
+**Python bindings:**
+- `ObjectMetadata` and `AnnotatedValue` pyclass types for attaching/reading metadata
+- `py_to_annotated()` detects `AnnotatedValue` at input boundaries
+- `MontyComplete.metadata` property exposes output metadata
+- Empty label validation (`validate_no_empty_strings()`)
+
+**JS bindings:**
 - Updated to compile with the new API — metadata fields passed as `None` for now
-- Python/JS-side metadata dict support deferred to a follow-up
 
 | File | Change |
 |------|--------|
@@ -298,10 +302,16 @@ Metadata now enters and exits the VM through the public API.
 |---------|--------|--------|
 | **CellValue metadata** | Done | `CellValue` now has `value` + `meta` fields. `LoadCell`/`StoreCell` propagate metadata through closure cells. Removed `#[repr(transparent)]` and `#[serde(transparent)]`. |
 | **Comprehensions** | Done | `ListAppend`, `SetAdd`, `DictSetItem` pass element metadata from the stack into containers during comprehension building. |
-| **BinarySubscr element-level** | Done | `resolve_subscr_meta()` looks up element metadata from List/Tuple for integer indexing. Falls back to container metadata for other types. |
+| **BinarySubscr element-level** | Done | `resolve_subscr_meta()` looks up element metadata from List/Tuple (integer indexing) and Dict (key lookup via `value_meta_for_key()`). Falls back to container metadata for unsupported types. |
 | **UnpackEx (star unpacking)** | Done | `a, *rest, b = lst` propagates per-element metadata. The `*rest` list carries each collected element's individual metadata. |
 | **Slice operations** | Done (Phase 3) | `get_slice_metadata()` mirrors slice indexing for metadata. |
 | **Copy** | Done (Phase 3) | `list.copy()` preserves element metadata. |
+| **`*args` unpacking** | Done | `extract_args_tuple_with_meta()` reads per-element metadata from the args tuple and populates `pending_arg_metadata` for propagation to the callee's parameter slots. |
+| **`**kwargs` / dict merging** | Done | `dict_merge()` and `dict_update()` preserve per-key and per-value metadata via `entries_with_metadata()` and `set_with_meta()`. |
+| **`list_extend` / `set_extend`** | Done | PEP 448 `[*x]` and `{*x}` preserve per-element metadata via `extract_items_with_meta()` helper. |
+| **`list_to_tuple`** | Done | Preserves per-element metadata when converting via `allocate_tuple_with_metadata()`. |
+| **String unpacking** | Done | Characters inherit the string's metadata in `unpack_sequence`, `unpack_ex`, `list_extend`, `set_extend` (via `extract_items_with_meta()`). |
+| **Empty label validation** | Done | Python API rejects empty strings in producers/consumers/tags with `ValueError`. |
 | **ForIter element-level** | Deferred | Requires iterator protocol changes to yield metadata alongside values. |
 | **Default arguments** | Deferred | When function parameters use defaults, the default's metadata would need to propagate. Requires changes to argument binding. |
 
@@ -310,9 +320,12 @@ Metadata now enters and exits the VM through the public API.
 | `crates/monty/src/heap_data.rs` | `CellValue` now a struct with `value` + `meta` fields |
 | `crates/monty/src/heap.rs` | Updated `cell.0` → `cell.value` references |
 | `crates/monty/src/object.rs` | Updated `cell.0` → `cell.value` reference |
-| `crates/monty/src/bytecode/vm/mod.rs` | `load_cell`/`store_cell` propagate metadata. `BinarySubscr` uses `resolve_subscr_meta()`. Added `normalize_and_lookup_meta()` helper. |
-| `crates/monty/src/bytecode/vm/call.rs` | Updated `CellValue` construction with struct syntax |
-| `crates/monty/src/bytecode/vm/collections.rs` | `list_append`/`set_add`/`dict_set_item` pass metadata. `unpack_ex` propagates per-element metadata. |
+| `crates/monty/src/bytecode/vm/mod.rs` | `load_cell`/`store_cell` propagate metadata. `BinarySubscr` uses `resolve_subscr_meta()` (now also handles Dict keys). Added `normalize_and_lookup_meta()` helper. |
+| `crates/monty/src/bytecode/vm/call.rs` | Updated `CellValue` construction with struct syntax. `extract_args_tuple_with_meta()` propagates `*args` element metadata via `pending_arg_metadata`. |
+| `crates/monty/src/bytecode/vm/collections.rs` | `list_append`/`set_add`/`dict_set_item` pass metadata. `unpack_ex`/`unpack_sequence` propagate per-element metadata (including string chars inheriting the string's metadata). `list_extend`/`set_extend` preserve element metadata via `extract_items_with_meta()`. `dict_merge`/`dict_update` preserve key/value metadata. `list_to_tuple` preserves element metadata. |
+| `crates/monty/src/types/dict.rs` | Added `value_meta_for_key()` for subscript metadata resolution without `&mut VM`. |
+| `crates/monty/src/types/list.rs` | Added `extend_with_meta()` for metadata-preserving list extension. |
+| `crates/monty-python/src/metadata.rs` | Added `validate_no_empty_strings()` — rejects empty strings in metadata labels. |
 
 ## Testing
 
@@ -340,15 +353,21 @@ Tests cover:
 - Merge with default: `x + 1` preserves `x`'s metadata (DEFAULT is identity)
 - F-string: `f'{a} {b}'` merges metadata from all interpolated values
 - No metadata: `1 + 2` with no inputs produces `None` metadata
+- `*args`: `f(*x)` propagates per-element metadata to function parameters
+- `{**x}`: dict literal merging preserves per-key/per-value metadata
+- `[*x]`: list extend preserves per-element metadata
+- `(*x,)`: list-to-tuple conversion preserves per-element metadata
+- String unpacking: `a, b = x` and `first, *rest = x` inherit the string's metadata
+- One-sided merge: `a + b` where only one operand has metadata preserves it
+
+**Python binding tests** (`crates/monty-python/tests/test_ext_metadata.py`):
+- Empty string rejection: producers, consumers, and tags must not contain empty strings
 
 ## Future Considerations
 
 - **Hybrid container metadata**: container-level metadata aggregated from
   elements for coarse-grained provenance queries
 - **Implicit flow tracking**: program counter label for control-flow tainting
-- **Element-level metadata at API boundary**: currently, `ObjectMetadata`
-  attaches to top-level values only; container element metadata at the API
-  boundary could be added via `AnnotatedMontyObject` wrapping
 - **Metadata-aware builtins**: `len()`, `type()`, `isinstance()` currently
   produce `DEFAULT` metadata; some could propagate (e.g. `str()` converting
   a value should carry the value's metadata)
@@ -356,15 +375,9 @@ Tests cover:
   return `(Value, MetadataId)` for element-level tracking during `for` loops
 - **Default argument metadata**: function parameter defaults should propagate
   their metadata when the argument is not provided by the caller
-- **Python/JS-side metadata dict support**: the binding layers currently pass
-  `None` for metadata; callers should be able to pass/receive metadata dicts
-  from Python/JS code
-- **Recursive metadata on MontyObject**: container variants (`List`, `Tuple`,
-  `Dict`, `Set`) should hold `AnnotatedObject` children instead of bare
-  `MontyObject`, so per-element metadata is visible at the API boundary.
-  Required for policy enforcement on external function call args.
-  See [`TODO-recursive-metadata.md`](../TODO-recursive-metadata.md) for the
-  full implementation plan.
+- **REPL metadata support**: `MontyRepl` does not yet support metadata
+  propagation — inputs cannot carry `AnnotatedValue`, the `MetadataStore`
+  is not persisted across REPL feed calls, and output metadata is discarded
 
 ## Porting Upstream Features — Metadata Checklist
 

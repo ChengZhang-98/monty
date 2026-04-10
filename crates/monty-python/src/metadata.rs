@@ -6,11 +6,25 @@
 
 use ::monty::ObjectMetadata;
 use pyo3::{
+    exceptions::PyValueError,
     prelude::*,
     types::{PyFrozenSet, PyString},
 };
 
 use crate::{convert::py_to_monty, dataclass::DcRegistry};
+
+/// Validates that a frozenset of strings contains no empty strings.
+fn validate_no_empty_strings(fs: &Bound<'_, PyFrozenSet>, field_name: &str) -> PyResult<()> {
+    for item in fs.iter() {
+        let s = item.extract::<String>()?;
+        if s.is_empty() {
+            return Err(PyValueError::new_err(format!(
+                "{field_name} must not contain empty strings"
+            )));
+        }
+    }
+    Ok(())
+}
 
 /// Provenance metadata attached to a value.
 ///
@@ -43,6 +57,17 @@ impl PyObjectMetadata {
         consumers: Option<&Bound<'_, PyFrozenSet>>,
         tags: Option<&Bound<'_, PyFrozenSet>>,
     ) -> PyResult<Self> {
+        // Validate that no frozenset contains empty strings
+        if let Some(fs) = producers {
+            validate_no_empty_strings(fs, "producers")?;
+        }
+        if let Some(fs) = consumers {
+            validate_no_empty_strings(fs, "consumers")?;
+        }
+        if let Some(fs) = tags {
+            validate_no_empty_strings(fs, "tags")?;
+        }
+
         let producers = match producers {
             Some(fs) => fs.clone().unbind(),
             None => PyFrozenSet::empty(py)?.unbind(),

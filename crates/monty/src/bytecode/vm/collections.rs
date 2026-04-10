@@ -9,8 +9,8 @@ use crate::{
     metadata::MetadataId,
     resource::ResourceTracker,
     types::{
-        Dict, List, PyTrait, Set, Slice, Type, allocate_tuple, allocate_tuple_with_metadata,
-        slice::value_to_option_i64, str::allocate_char,
+        Dict, List, PyTrait, Set, Slice, Type, allocate_tuple_with_metadata, slice::value_to_option_i64,
+        str::allocate_char,
     },
     value::{VALUE_SIZE, Value},
 };
@@ -93,6 +93,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     ///
     /// Stack: [list, iterable] -> [list]
     /// Pops the iterable, extends the list in place, leaves list on stack.
+    /// Per-element metadata is preserved from the source container.
     ///
     /// Raises `TypeError("Value after * must be an iterable, not {type}")` for non-iterables,
     /// matching CPython's message for list/tuple literal unpacking (`[*x]`, `(*x,)`).
@@ -102,46 +103,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn list_extend(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let iterable = this.pop();
+        let (iterable, iter_meta) = this.pop_with_meta();
         defer_drop!(iterable, this);
         // HeapGuard for list_ref: pushed back on success via into_parts, dropped on error
         let mut list_ref_guard = HeapGuard::new(this.pop(), this);
         let (list_ref, this) = list_ref_guard.as_parts();
 
-        let copied_items: Vec<Value> = match iterable {
-            Value::Ref(id) => match this.heap.get(*id) {
-                HeapData::List(list) => list.as_slice().iter().map(|v| v.clone_with_heap(this)).collect(),
-                HeapData::Tuple(tuple) => tuple.as_slice().iter().map(|v| v.clone_with_heap(this)).collect(),
-                HeapData::Set(set) => set.storage().iter().map(|v| v.clone_with_heap(this)).collect(),
-                HeapData::Dict(dict) => dict.iter().map(|(k, _)| k.clone_with_heap(this)).collect(),
-                HeapData::Str(s) => {
-                    // Need to allocate strings for each character
-                    let chars: Vec<char> = s.as_str().chars().collect();
-                    let mut items = Vec::with_capacity(chars.len());
-                    for c in chars {
-                        items.push(allocate_char(c, this.heap)?);
-                    }
-                    items
-                }
-                _ => {
-                    let type_ = iterable.py_type(this);
-                    return Err(ExcType::type_error_value_after_star(type_));
-                }
-            },
-            Value::InternString(id) => {
-                let s = this.interns.get_str(*id);
-                let chars: Vec<char> = s.chars().collect();
-                let mut items = Vec::with_capacity(chars.len());
-                for c in chars {
-                    items.push(allocate_char(c, this.heap)?);
-                }
-                items
-            }
-            _ => {
-                let type_ = iterable.py_type(this);
-                return Err(ExcType::type_error_value_after_star(type_));
-            }
-        };
+        let (copied_items, copied_meta) = extract_items_with_meta(iterable, iter_meta, this, |type_| {
+            ExcType::type_error_value_after_star(type_)
+        })?;
 
         // Check if any copied items are refs (for updating contains_refs)
         let has_refs = copied_items.iter().any(|v| matches!(v, Value::Ref(_)));
@@ -151,17 +121,16 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             this.heap.track_growth(copied_items.len() * VALUE_SIZE)?;
         }
 
-        // Extend the list
+        // Extend the list with items and their metadata
         if let Value::Ref(id) = list_ref {
             let HeapReadOutput::List(mut list) = this.heap.read(*id) else {
                 panic!("list_extend: expected List on heap");
             };
             let list = list.get_mut(this.heap);
-            // Update contains_refs before extending
             if has_refs {
                 list.set_contains_refs();
             }
-            list.as_vec_mut().extend(copied_items);
+            list.extend_with_meta(copied_items, copied_meta);
         }
 
         // Mark potential cycle after the mutable borrow ends
@@ -175,7 +144,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         Ok(())
     }
 
-    /// Converts a list to a tuple.
+    /// Converts a list to a tuple, preserving per-element metadata.
     ///
     /// Stack: [list] -> [tuple]
     pub(super) fn list_to_tuple(&mut self) -> Result<(), RunError> {
@@ -191,7 +160,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Err(RunError::internal("ListToTuple: expected list"));
         };
         let items = list.as_slice().iter().map(|v| v.clone_with_heap(this.heap)).collect();
-        let value = allocate_tuple(items, this.heap)?;
+        let meta = list.item_metadata_slice().to_vec();
+        let value = allocate_tuple_with_metadata(items, meta.into(), this.heap)?;
         this.push(value);
         Ok(())
     }
@@ -219,11 +189,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             this.interns.get_str(StringId::from_index(func_name_id)).to_string()
         };
 
-        // Check that mapping is a dict (Ref pointing to Dict) and clone key-value pairs
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
+        // Check that mapping is a dict and clone key-value pairs with metadata
+        let copied_items: Vec<(Value, MetadataId, Value, MetadataId)> = if let Value::Ref(id) = mapping {
             if let HeapData::Dict(dict) = this.heap.get(*id) {
-                dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
+                dict.entries_with_metadata()
+                    .map(|(k, km, v, vm_)| (k.clone_with_heap(this), km, v.clone_with_heap(this), vm_))
                     .collect()
             } else {
                 let type_name = mapping.py_type(this).to_string();
@@ -241,7 +211,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             return Err(RunError::internal("DictMerge: expected dict ref"));
         };
 
-        for (key, value) in copied_items {
+        for (key, key_meta, value, value_meta) in copied_items {
             // Validate key is a string (InternString or heap-allocated Str)
             let is_string = match &key {
                 Value::InternString(_) => true,
@@ -271,7 +241,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 unreachable!("DictMerge: entry is not a Dict")
             };
 
-            if let Some(old_value) = dict.set(key, value, this)? {
+            if let Some(old_value) = dict.set_with_meta(key, key_meta, value, value_meta, this)? {
                 old_value.drop_with_heap(this);
                 return Err(ExcType::type_error_multiple_values(&func_name, &key_str));
             }
@@ -304,11 +274,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let mapping = this.pop();
         defer_drop!(mapping, this);
 
-        // Clone all key/value pairs out of the mapping before mutating the target dict
-        let copied_items: Vec<(Value, Value)> = if let Value::Ref(id) = mapping {
+        // Clone all key/value pairs with metadata out of the mapping before mutating the target
+        let copied_items: Vec<(Value, MetadataId, Value, MetadataId)> = if let Value::Ref(id) = mapping {
             if let HeapData::Dict(dict) = this.heap.get(*id) {
-                dict.iter()
-                    .map(|(k, v)| (k.clone_with_heap(this), v.clone_with_heap(this)))
+                dict.entries_with_metadata()
+                    .map(|(k, km, v, vm_)| (k.clone_with_heap(this), km, v.clone_with_heap(this), vm_))
                     .collect()
             } else {
                 let type_ = mapping.py_type(this);
@@ -329,11 +299,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             unreachable!("DictUpdate: target is always a Ref — compiler invariant")
         };
 
-        for (key, value) in copied_items {
+        for (key, key_meta, value, value_meta) in copied_items {
             let HeapReadOutput::Dict(mut dict) = this.heap.read(dict_id) else {
                 unreachable!("DictUpdate: heap entry is always a Dict — compiler invariant")
             };
-            let old = dict.set(key, value, this)?;
+            let old = dict.set_with_meta(key, key_meta, value, value_meta, this)?;
             // Silently drop any old value — PEP 448 dict literals allow duplicate keys
             if let Some(old_val) = old {
                 old_val.drop_with_heap(this);
@@ -356,43 +326,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn set_extend(&mut self, depth: usize) -> Result<(), RunError> {
         let this = self;
 
-        let iterable = this.pop();
+        let (iterable, iter_meta) = this.pop_with_meta();
         defer_drop!(iterable, this);
 
-        // Clone items from the iterable (same sources as list_extend)
-        let copied_items: Vec<Value> = match iterable {
-            Value::Ref(id) => match this.heap.get(*id) {
-                HeapData::List(list) => list.as_slice().iter().map(|v| v.clone_with_heap(this)).collect(),
-                HeapData::Tuple(tuple) => tuple.as_slice().iter().map(|v| v.clone_with_heap(this)).collect(),
-                HeapData::Set(set) => set.storage().iter().map(|v| v.clone_with_heap(this)).collect(),
-                HeapData::Dict(dict) => dict.iter().map(|(k, _)| k.clone_with_heap(this)).collect(),
-                HeapData::Str(s) => {
-                    let chars: Vec<char> = s.as_str().chars().collect();
-                    let mut items = Vec::with_capacity(chars.len());
-                    for c in chars {
-                        items.push(allocate_char(c, this.heap)?);
-                    }
-                    items
-                }
-                _ => {
-                    let type_ = iterable.py_type(this);
-                    return Err(ExcType::type_error_not_iterable(type_));
-                }
-            },
-            Value::InternString(id) => {
-                let s = this.interns.get_str(*id);
-                let chars: Vec<char> = s.chars().collect();
-                let mut items = Vec::with_capacity(chars.len());
-                for c in chars {
-                    items.push(allocate_char(c, this.heap)?);
-                }
-                items
-            }
-            _ => {
-                let type_ = iterable.py_type(this);
-                return Err(ExcType::type_error_not_iterable(type_));
-            }
-        };
+        let (copied_items, copied_meta) = extract_items_with_meta(iterable, iter_meta, this, |type_| {
+            ExcType::type_error_not_iterable(type_)
+        })?;
 
         // The target set sits at `depth` positions below TOS (which is now gone after pop)
         let stack_len = this.stack.len();
@@ -404,11 +343,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             unreachable!("SetExtend: target is always a Ref — compiler invariant")
         };
 
-        for item in copied_items {
+        for (item, item_meta) in copied_items.into_iter().zip(copied_meta) {
             let HeapReadOutput::Set(mut set) = this.heap.read(set_id) else {
                 unreachable!("SetExtend: heap entry is always a Set — compiler invariant")
             };
-            set.add(item, this)?;
+            set.add_with_meta(item, item_meta, this)?;
         }
 
         Ok(())
@@ -511,7 +450,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn unpack_sequence(&mut self, count: usize) -> Result<(), RunError> {
         let this = self;
 
-        let value = this.pop();
+        let (value, value_meta) = this.pop_with_meta();
         defer_drop!(value, this);
 
         // Copy values without incrementing refcounts (avoids borrow conflict with heap.get).
@@ -525,15 +464,13 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 if str_len != count {
                     return Err(unpack_size_error(count, str_len));
                 }
-                // Allocate each character as a new string — chars get DEFAULT metadata
                 let mut items = Vec::with_capacity(str_len);
                 for c in s.chars() {
                     items.push(allocate_char(c, this.heap)?);
                 }
-                for item in items.into_iter().rev() {
-                    this.push(item);
-                }
-                return Ok(());
+                // Characters inherit the string's metadata
+                let meta = vec![value_meta; items.len()];
+                (items, meta)
             }
             // Heap-allocated sequences
             Value::Ref(heap_id) => match this.heap.get(*heap_id) {
@@ -565,10 +502,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     for c in chars {
                         items.push(allocate_char(c, this.heap)?);
                     }
-                    for item in items.into_iter().rev() {
-                        this.push(item);
-                    }
-                    return Ok(());
+                    // Characters inherit the string's metadata
+                    let meta = vec![value_meta; items.len()];
+                    (items, meta)
                 }
                 _ => {
                     let type_name = value.py_type(this);
@@ -600,12 +536,13 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn unpack_ex(&mut self, before: usize, after: usize) -> Result<(), RunError> {
         let this = self;
 
-        let value = this.pop();
+        let (value, value_meta) = this.pop_with_meta();
         defer_drop_mut!(value, this);
 
         let min_items = before + after;
 
-        // Extract items and their metadata from the sequence
+        // Extract items and their metadata from the sequence.
+        // String characters inherit the string's metadata.
         let (items, meta): (Vec<Value>, Vec<MetadataId>) = match value {
             Value::InternString(string_id) => {
                 let s = this.interns.get_str(*string_id);
@@ -617,7 +554,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 for c in chars {
                     items.push(allocate_char(c, this.heap)?);
                 }
-                let meta = vec![MetadataId::DEFAULT; items.len()];
+                let meta = vec![value_meta; items.len()];
                 (items, meta)
             }
             Value::Ref(heap_id) => match this.heap.get(*heap_id) {
@@ -648,7 +585,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     for c in chars {
                         items.push(allocate_char(c, this.heap)?);
                     }
-                    let meta = vec![MetadataId::DEFAULT; items.len()];
+                    let meta = vec![value_meta; items.len()];
                     (items, meta)
                 }
                 _ => {
@@ -706,6 +643,79 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         }
 
         Ok(())
+    }
+}
+
+/// Extracts items and their per-element metadata from an iterable value.
+///
+/// Container elements carry their stored metadata. String characters and dict keys
+/// inherit the iterable's own stack metadata (`iter_meta`), since they don't have
+/// independent provenance.
+///
+/// The `make_error` closure produces the appropriate `TypeError` for non-iterable types.
+fn extract_items_with_meta<T: ResourceTracker>(
+    iterable: &Value,
+    iter_meta: MetadataId,
+    vm: &mut VM<'_, '_, T>,
+    make_error: impl FnOnce(Type) -> RunError,
+) -> Result<(Vec<Value>, Vec<MetadataId>), RunError> {
+    match iterable {
+        Value::Ref(id) => match vm.heap.get(*id) {
+            HeapData::List(list) => {
+                let meta = list.item_metadata_slice().to_vec();
+                let items = list.as_slice().iter().map(|v| v.clone_with_heap(vm)).collect();
+                Ok((items, meta))
+            }
+            HeapData::Tuple(tuple) => {
+                let meta = tuple.item_metadata_slice().to_vec();
+                let items = tuple.as_slice().iter().map(|v| v.clone_with_heap(vm)).collect();
+                Ok((items, meta))
+            }
+            HeapData::Set(set) => {
+                let (items, meta): (Vec<_>, Vec<_>) = set
+                    .entries_with_metadata()
+                    .map(|(v, m)| (v.clone_with_heap(vm), m))
+                    .unzip();
+                Ok((items, meta))
+            }
+            HeapData::Dict(dict) => {
+                // Dict iteration yields keys; each key carries its key_meta
+                let (items, meta): (Vec<_>, Vec<_>) = dict
+                    .entries_with_metadata()
+                    .map(|(k, km, _, _)| (k.clone_with_heap(vm), km))
+                    .unzip();
+                Ok((items, meta))
+            }
+            HeapData::Str(s) => {
+                let chars: Vec<char> = s.as_str().chars().collect();
+                let mut items = Vec::with_capacity(chars.len());
+                for c in chars {
+                    items.push(allocate_char(c, vm.heap)?);
+                }
+                // Characters inherit the string's metadata
+                let meta = vec![iter_meta; items.len()];
+                Ok((items, meta))
+            }
+            _ => {
+                let type_ = iterable.py_type(vm);
+                Err(make_error(type_))
+            }
+        },
+        Value::InternString(id) => {
+            let s = vm.interns.get_str(*id);
+            let chars: Vec<char> = s.chars().collect();
+            let mut items = Vec::with_capacity(chars.len());
+            for c in chars {
+                items.push(allocate_char(c, vm.heap)?);
+            }
+            // Characters inherit the string's metadata
+            let meta = vec![iter_meta; items.len()];
+            Ok((items, meta))
+        }
+        _ => {
+            let type_ = iterable.py_type(vm);
+            Err(make_error(type_))
+        }
     }
 }
 

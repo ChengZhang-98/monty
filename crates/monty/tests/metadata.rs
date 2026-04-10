@@ -435,3 +435,138 @@ fn metadata_unpacking_preserves_element_metadata() {
     assert_eq!(value, MontyObject::Int(2));
     assert_eq!(out_meta, Some(meta_b));
 }
+
+// === Star-args metadata propagation ===
+
+#[test]
+fn metadata_star_args_propagates_to_function_params() {
+    // f(*args) should propagate per-element metadata from the args tuple to parameters
+    let meta_a = meta(&["src_a"], None, &[]);
+    let meta_b = meta(&["src_b"], None, &["tag"]);
+    let input_a = AnnotatedObject::new(MontyObject::Int(10), Some(meta_a));
+    let input_b = AnnotatedObject::new(MontyObject::Int(20), Some(meta_b));
+
+    // *args is constructed from a list that becomes a tuple, then unpacked
+    let code = "def add(a, b):\n    return a + b\nadd(*x)";
+    let input_list = MontyObject::List(vec![input_a, input_b]);
+    let input = AnnotatedObject::from(input_list);
+
+    let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(30));
+    // result should merge meta_a + meta_b
+    let out = out_meta.expect("merged metadata from *args");
+    assert_eq!(
+        out.producers,
+        BTreeSet::from(["src_a".to_string(), "src_b".to_string()])
+    );
+    assert_eq!(out.tags, BTreeSet::from(["tag".to_string()]));
+}
+
+// === dict merge / dict_update metadata ===
+
+#[test]
+fn metadata_dict_update_preserves_value_metadata() {
+    // {**d} should preserve per-key and per-value metadata from the source dict
+    use monty::AnnotatedDictPairs;
+    let meta_val = meta(&["api"], None, &["sensitive"]);
+    let input_dict = MontyObject::Dict(AnnotatedDictPairs(vec![(
+        AnnotatedObject::new(MontyObject::String("key".to_string()), None),
+        AnnotatedObject::new(MontyObject::Int(42), Some(meta_val.clone())),
+    )]));
+    let input = AnnotatedObject::from(input_dict);
+
+    // {**x} creates a new dict via DictUpdate; value metadata should survive
+    let code = "d = {**x}\nd['key']";
+    let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(42));
+    assert_eq!(out_meta, Some(meta_val));
+}
+
+// === list_extend / set_extend metadata ===
+
+#[test]
+fn metadata_list_extend_preserves_element_metadata() {
+    // [*x] should preserve per-element metadata from the source list
+    let meta_a = meta(&["src_a"], None, &[]);
+    let meta_b = meta(&["src_b"], None, &[]);
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(1), Some(meta_a.clone())),
+        AnnotatedObject::new(MontyObject::Int(2), Some(meta_b.clone())),
+    ]);
+    let input = AnnotatedObject::from(input_list);
+
+    // [*x] builds via BuildList(0) then ListExtend
+    let code = "y = [*x]\ny";
+    let (value, _) = run_with_meta(code, vec!["x"], vec![input]);
+    if let MontyObject::List(elements) = value {
+        assert_eq!(elements.len(), 2);
+        assert_eq!(elements[0].metadata, Some(meta_a));
+        assert_eq!(elements[1].metadata, Some(meta_b));
+    } else {
+        panic!("expected List, got {value:?}");
+    }
+}
+
+// === list_to_tuple metadata ===
+
+#[test]
+fn metadata_list_to_tuple_preserves_element_metadata() {
+    // (*x,) goes through ListToTuple, element metadata should survive
+    let meta_a = meta(&["src"], None, &["tagged"]);
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(1), Some(meta_a.clone())),
+        AnnotatedObject::new(MontyObject::Int(2), None),
+    ]);
+    let input = AnnotatedObject::from(input_list);
+
+    let code = "y = (*x,)\ny";
+    let (value, _) = run_with_meta(code, vec!["x"], vec![input]);
+    if let MontyObject::Tuple(elements) = value {
+        assert_eq!(elements.len(), 2);
+        assert_eq!(elements[0].metadata, Some(meta_a));
+        assert_eq!(elements[1].metadata, None);
+    } else {
+        panic!("expected Tuple, got {value:?}");
+    }
+}
+
+// === String unpacking metadata inheritance ===
+
+#[test]
+fn metadata_string_unpack_inherits_string_metadata() {
+    // Unpacking a string should give each char the string's metadata
+    let input_meta = meta(&["api_response"], None, &["external"]);
+    let input = AnnotatedObject::new(MontyObject::String("ab".to_string()), Some(input_meta.clone()));
+
+    let code = "a, b = x\na";
+    let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::String("a".to_string()));
+    assert_eq!(out_meta, Some(input_meta));
+}
+
+#[test]
+fn metadata_string_star_unpack_inherits_string_metadata() {
+    // first, *rest = string should give each char the string's metadata
+    let input_meta = meta(&["src"], None, &[]);
+    let input = AnnotatedObject::new(MontyObject::String("abc".to_string()), Some(input_meta.clone()));
+
+    let code = "first, *rest = x\nfirst";
+    let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::String("a".to_string()));
+    assert_eq!(out_meta, Some(input_meta));
+}
+
+// === Merge with one-sided metadata ===
+
+#[test]
+fn metadata_merge_only_one_operand_has_metadata() {
+    // When only one operand has metadata, result should carry that metadata
+    // (merge with DEFAULT is identity)
+    let input_meta = meta(&["src"], Some(&["viewer"]), &["tag"]);
+    let input_a = AnnotatedObject::new(MontyObject::Int(10), Some(input_meta.clone()));
+    let input_b = AnnotatedObject::new(MontyObject::Int(5), None);
+
+    let (value, out_meta) = run_with_meta("a + b", vec!["a", "b"], vec![input_a, input_b]);
+    assert_eq!(value, MontyObject::Int(15));
+    assert_eq!(out_meta, Some(input_meta));
+}

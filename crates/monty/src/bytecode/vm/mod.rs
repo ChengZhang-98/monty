@@ -2109,17 +2109,27 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         let Value::Ref(obj_id) = obj else {
             return fallback_meta;
         };
-        let index = match key {
-            Value::Int(i) => *i,
-            Value::Bool(b) => i64::from(*b),
-            _ => return fallback_meta,
-        };
         match self.heap.get(*obj_id) {
-            HeapData::List(list) => normalize_and_lookup_meta(index, list.len(), |i| list.item_meta(i), fallback_meta),
+            HeapData::List(list) => {
+                let index = match key {
+                    Value::Int(i) => *i,
+                    Value::Bool(b) => i64::from(*b),
+                    _ => return fallback_meta,
+                };
+                normalize_and_lookup_meta(index, list.len(), |i| list.item_meta(i), fallback_meta)
+            }
             HeapData::Tuple(tuple) => {
+                let index = match key {
+                    Value::Int(i) => *i,
+                    Value::Bool(b) => i64::from(*b),
+                    _ => return fallback_meta,
+                };
                 let len = tuple.as_slice().len();
                 normalize_and_lookup_meta(index, len, |i| tuple.item_meta(i), fallback_meta)
             }
+            HeapData::Dict(dict) => dict
+                .value_meta_for_key(key, self.heap, self.interns)
+                .unwrap_or(fallback_meta),
             _ => fallback_meta,
         }
     }

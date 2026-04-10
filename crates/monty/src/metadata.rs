@@ -1,5 +1,3 @@
-// TODO(Phase 2): remove this allow once opcodes use LabelSet/Metadata merge operations
-#![allow(dead_code)]
 //! Metadata propagation for data provenance tracking.
 //!
 //! Every Python value in Monty can carry metadata with three fields:
@@ -130,6 +128,7 @@ impl LabelSet {
     }
 
     /// Returns `true` if this set contains no labels and is not universal.
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         !self.is_universal && self.labels.is_empty()
     }

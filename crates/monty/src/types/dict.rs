@@ -164,6 +164,38 @@ impl Dict {
         Ok(dict_guard.into_inner())
     }
 
+    /// Looks up the `value_meta` for a key by scanning entries.
+    ///
+    /// Uses inline `Value` variant matching to find the key without the
+    /// `py_hash`/`py_eq` machinery that requires `&mut VM`. Handles cross-type
+    /// string comparison (InternString vs heap Str) using the interns table and heap.
+    /// Falls back to `None` for complex keys where identity comparison is insufficient.
+    pub fn value_meta_for_key(
+        &self,
+        key: &Value,
+        heap: &Heap<impl ResourceTracker>,
+        interns: &Interns,
+    ) -> Option<MetadataId> {
+        self.entries.iter().find_map(|e| {
+            let matches = match (&e.key, key) {
+                (Value::InternString(a), Value::InternString(b)) => a == b,
+                (Value::Int(a), Value::Int(b)) => a == b,
+                (Value::Bool(a), Value::Bool(b)) => a == b,
+                (Value::None, Value::None) => true,
+                // Cross-type string comparison: InternString vs heap Str
+                (Value::InternString(id), Value::Ref(ref_id)) | (Value::Ref(ref_id), Value::InternString(id)) => {
+                    if let HeapData::Str(s) = heap.get(*ref_id) {
+                        s.as_str() == interns.get_str(*id)
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            };
+            if matches { Some(e.value_meta) } else { None }
+        })
+    }
+
     /// Returns an iterator over `(key, key_meta, value, value_meta)` tuples.
     ///
     /// This provides access to per-key and per-value metadata stored in the dict,

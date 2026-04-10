@@ -67,6 +67,7 @@ Key paths to understand for extensions:
 | `crates/monty-python/src/async_dispatch.rs` | Async execution loop, `with_print_writer` |
 | `crates/monty-python/src/convert.rs` | `py_to_monty` / `monty_to_py` |
 | `crates/monty-python/src/external.rs` | External function dispatch |
+| `crates/monty-python/src/metadata.rs` | `PyObjectMetadata`, `PyAnnotatedValue`, metadata validation and conversion |
 | `crates/monty/src/metadata.rs` | `MetadataStore`, `MetadataId`, `LabelSet`, provenance types |
 | `crates/monty/src/bytecode/vm/mod.rs` | VM struct with parallel metadata stacks |
 | `crates/monty-python/python/pydantic_monty/_monty.pyi` | Python type stubs |

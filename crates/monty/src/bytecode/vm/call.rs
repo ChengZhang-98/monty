@@ -430,8 +430,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defer_drop!(args_tuple, this);
         defer_drop!(callable, this);
 
-        // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple(args_tuple);
+        // Extract positional args and their per-element metadata from tuple
+        let (copied_args, arg_meta) = this.extract_args_tuple_with_meta(args_tuple);
+
+        // Populate pending_arg_metadata so call_sync_function can apply it
+        this.pending_arg_metadata.clear();
+        this.pending_arg_metadata.extend(arg_meta);
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
@@ -457,8 +461,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let this = self;
         defer_drop!(args_tuple, this);
 
-        // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple_for_attr(args_tuple);
+        // Extract positional args and their per-element metadata from tuple
+        let (copied_args, arg_meta) = this.extract_args_tuple_with_meta(args_tuple);
+
+        // Populate pending_arg_metadata so call_sync_function can apply it
+        this.pending_arg_metadata.clear();
+        this.pending_arg_metadata.extend(arg_meta);
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
@@ -471,19 +479,25 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         this.call_attr(obj, name_id, args)
     }
 
-    /// Extracts arguments from a tuple for `CallFunctionExtended`.
+    /// Extracts argument values and their per-element metadata from a tuple.
+    ///
+    /// Used by both `call_function_extended` and `call_attr_extended` to unpack
+    /// `*args` tuples while preserving per-element metadata for propagation to
+    /// the callee's parameter slots via `pending_arg_metadata`.
     ///
     /// # Panics
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
-    /// the compiler always emits `ListToTuple` before `CallFunctionExtended`.
-    fn extract_args_tuple(&mut self, args_tuple: &Value) -> Vec<Value> {
+    /// the compiler always emits `ListToTuple` before extended call opcodes.
+    fn extract_args_tuple_with_meta(&mut self, args_tuple: &Value) -> (Vec<Value>, Vec<MetadataId>) {
         let Value::Ref(id) = args_tuple else {
-            unreachable!("CallFunctionExtended: args_tuple must be a Ref")
+            unreachable!("extract_args_tuple_with_meta: args_tuple must be a Ref")
         };
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
-            unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
+            unreachable!("extract_args_tuple_with_meta: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
+        let values = tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect();
+        let meta = tuple.item_metadata_slice().to_vec();
+        (values, meta)
     }
 
     /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
@@ -542,21 +556,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 kwargs: KwargsValues::Empty,
             },
         }
-    }
-
-    /// Extracts arguments from a tuple for `CallAttrExtended`.
-    ///
-    /// # Panics
-    /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
-    /// the compiler always emits `ListToTuple` before `CallAttrExtended`.
-    fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> Vec<Value> {
-        let Value::Ref(id) = args_tuple else {
-            unreachable!("CallAttrExtended: args_tuple must be a Ref")
-        };
-        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
-            unreachable!("CallAttrExtended: args_tuple must be a Tuple")
-        };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallAttrExtended`.
