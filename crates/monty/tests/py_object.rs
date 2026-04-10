@@ -87,7 +87,7 @@ fn is_truthy_empty_list_is_falsy() {
 
 #[test]
 fn is_truthy_nonempty_list_is_truthy() {
-    assert!(MontyObject::List(vec![MontyObject::Int(1)]).is_truthy());
+    assert!(MontyObject::List(vec![MontyObject::Int(1).into()]).is_truthy());
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn is_truthy_empty_tuple_is_falsy() {
 
 #[test]
 fn is_truthy_nonempty_tuple_is_truthy() {
-    assert!(MontyObject::Tuple(vec![MontyObject::Int(1)]).is_truthy());
+    assert!(MontyObject::Tuple(vec![MontyObject::Int(1).into()]).is_truthy());
 }
 
 #[test]
@@ -187,7 +187,7 @@ fn type_name() {
             name: "Foo".to_string(),
             type_id: 0,
             field_names: vec![],
-            attrs: monty::DictPairs::from(vec![]),
+            attrs: monty::AnnotatedDictPairs::from(vec![]),
             frozen: false,
         }
         .type_name(),
@@ -200,13 +200,13 @@ fn type_name() {
 #[test]
 fn is_truthy_set() {
     assert!(!MontyObject::Set(vec![]).is_truthy());
-    assert!(MontyObject::Set(vec![MontyObject::Int(1)]).is_truthy());
+    assert!(MontyObject::Set(vec![MontyObject::Int(1).into()]).is_truthy());
 }
 
 #[test]
 fn is_truthy_frozenset() {
     assert!(!MontyObject::FrozenSet(vec![]).is_truthy());
-    assert!(MontyObject::FrozenSet(vec![MontyObject::Int(1)]).is_truthy());
+    assert!(MontyObject::FrozenSet(vec![MontyObject::Int(1).into()]).is_truthy());
 }
 
 #[test]
@@ -311,7 +311,7 @@ fn is_truthy_dataclass() {
             name: "Foo".to_string(),
             type_id: 0,
             field_names: vec![],
-            attrs: monty::DictPairs::from(vec![]),
+            attrs: monty::AnnotatedDictPairs::from(vec![]),
             frozen: false,
         }
         .is_truthy()
@@ -327,7 +327,7 @@ fn repr_frozenset_empty() {
 
 #[test]
 fn repr_frozenset_nonempty() {
-    let fs = MontyObject::FrozenSet(vec![MontyObject::Int(1), MontyObject::Int(2)]);
+    let fs = MontyObject::FrozenSet(vec![MontyObject::Int(1).into(), MontyObject::Int(2).into()]);
     assert_eq!(fs.py_repr(), "frozenset({1, 2})");
 }
 
@@ -721,7 +721,7 @@ fn eq_named_tuple() {
     let a = MontyObject::NamedTuple {
         type_name: "Point".to_string(),
         field_names: vec!["x".to_string(), "y".to_string()],
-        values: vec![MontyObject::Int(1), MontyObject::Int(2)],
+        values: vec![MontyObject::Int(1).into(), MontyObject::Int(2).into()],
     };
     let b = a.clone();
     assert_eq!(a, b);

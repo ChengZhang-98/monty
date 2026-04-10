@@ -125,7 +125,11 @@ fn resolve_as_list() {
     let lookup = progress.into_name_lookup().unwrap();
     assert_eq!(lookup.name, "ITEMS");
 
-    let items = MontyObject::List(vec![MontyObject::Int(10), MontyObject::Int(20), MontyObject::Int(30)]);
+    let items = MontyObject::List(vec![
+        MontyObject::Int(10).into(),
+        MontyObject::Int(20).into(),
+        MontyObject::Int(30).into(),
+    ]);
     let result = lookup.resume(items, PrintWriter::Stdout).unwrap();
     assert_eq!(result.into_complete().unwrap().value, MontyObject::Int(3));
 }
@@ -366,7 +370,11 @@ fn range_builtin_no_lookup() {
         .unwrap();
     assert_eq!(
         progress.into_complete().unwrap().value,
-        MontyObject::List(vec![MontyObject::Int(0), MontyObject::Int(1), MontyObject::Int(2)])
+        MontyObject::List(vec![
+            MontyObject::Int(0).into(),
+            MontyObject::Int(1).into(),
+            MontyObject::Int(2).into()
+        ])
     );
 }
 

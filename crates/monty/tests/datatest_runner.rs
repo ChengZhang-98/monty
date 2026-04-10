@@ -18,8 +18,8 @@ use std::{
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
 use monty::{
-    ExcType, ExtFunctionResult, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyObject, MontyRun,
-    NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
+    AnnotatedObject, ExcType, ExtFunctionResult, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyObject,
+    MontyRun, NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
     fs::{MountMode, MountTable, OverlayState},
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -360,7 +360,12 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
         "get_list" => {
             assert!(args.is_empty(), "get_list requires no arguments");
             DispatchResult::Sync(
-                MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)]).into(),
+                MontyObject::List(vec![
+                    MontyObject::Int(1).into(),
+                    MontyObject::Int(2).into(),
+                    MontyObject::Int(3).into(),
+                ])
+                .into(),
             )
         }
         "raise_error" => {
@@ -557,10 +562,10 @@ fn extract_point_fields(obj: &MontyObject) -> (i64, i64) {
             let mut x = 0i64;
             let mut y = 0i64;
             for (key, value) in attrs {
-                if let MontyObject::String(k) = key {
+                if let MontyObject::String(k) = &key.value {
                     match k.as_str() {
-                        "x" => x = i64::try_from(value).expect("x must be int"),
-                        "y" => y = i64::try_from(value).expect("y must be int"),
+                        "x" => x = i64::try_from(&value.value).expect("x must be int"),
+                        "y" => y = i64::try_from(&value.value).expect("y must be int"),
                         _ => {}
                     }
                 }
@@ -588,10 +593,10 @@ fn extract_user_name(obj: &MontyObject) -> String {
     match obj {
         MontyObject::Dataclass { attrs, .. } => {
             for (key, value) in attrs {
-                if let MontyObject::String(k) = key
+                if let MontyObject::String(k) = &key.value
                     && k == "name"
                 {
-                    return String::try_from(value).expect("name must be str");
+                    return String::try_from(&value.value).expect("name must be str");
                 }
             }
             panic!("User dataclass has no 'name' field");
@@ -941,7 +946,7 @@ fn dispatch_os_call(
         OsFunction::Iterdir => {
             if let Some(entries) = get_virtual_dir_entries(&path) {
                 // Return Path objects, not strings
-                let list: Vec<MontyObject> = entries.into_iter().map(MontyObject::Path).collect();
+                let list: Vec<AnnotatedObject> = entries.into_iter().map(|e| MontyObject::Path(e).into()).collect();
                 MontyObject::List(list).into()
             } else {
                 MontyException::new(
@@ -1749,9 +1754,9 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                     "CONST_FLOAT" => NameLookupResult::Value(MontyObject::Float(3.14)),
                     "CONST_BOOL" => NameLookupResult::Value(MontyObject::Bool(true)),
                     "CONST_LIST" => NameLookupResult::Value(MontyObject::List(vec![
-                        MontyObject::Int(1),
-                        MontyObject::Int(2),
-                        MontyObject::Int(3),
+                        MontyObject::Int(1).into(),
+                        MontyObject::Int(2).into(),
+                        MontyObject::Int(3).into(),
                     ])),
                     "CONST_NONE" => NameLookupResult::Value(MontyObject::None),
                     // Unknown names → NameError

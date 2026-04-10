@@ -240,3 +240,198 @@ fn metadata_no_metadata_inputs_produce_none_output() {
     assert_eq!(value, MontyObject::Int(3));
     assert_eq!(out_meta, None);
 }
+
+// === Recursive element-level metadata tests ===
+
+#[test]
+fn metadata_list_input_preserves_element_metadata() {
+    // A list input where each element has distinct metadata should preserve
+    // per-element metadata through a round-trip: input → interpreter → output.
+    let meta_a = meta(&["src_a"], None, &[]);
+    let meta_b = meta(&["src_b"], Some(&["admin"]), &["pii"]);
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(1), Some(meta_a.clone())),
+        AnnotatedObject::new(MontyObject::Int(2), Some(meta_b.clone())),
+    ]);
+    let input = AnnotatedObject::from(input_list);
+
+    let (value, _top_meta) = run_with_meta("x", vec!["x"], vec![input]);
+    if let MontyObject::List(elements) = value {
+        assert_eq!(elements.len(), 2);
+        assert_eq!(elements[0].value, MontyObject::Int(1));
+        assert_eq!(elements[0].metadata, Some(meta_a));
+        assert_eq!(elements[1].value, MontyObject::Int(2));
+        assert_eq!(elements[1].metadata, Some(meta_b));
+    } else {
+        panic!("expected List, got {value:?}");
+    }
+}
+
+#[test]
+fn metadata_list_element_no_metadata_roundtrips_as_none() {
+    // Elements without metadata should round-trip as None (not Some(default)).
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(1), None),
+        AnnotatedObject::new(MontyObject::Int(2), None),
+    ]);
+    let input = AnnotatedObject::from(input_list);
+
+    let (value, _) = run_with_meta("x", vec!["x"], vec![input]);
+    if let MontyObject::List(elements) = value {
+        assert_eq!(elements[0].metadata, None);
+        assert_eq!(elements[1].metadata, None);
+    } else {
+        panic!("expected List");
+    }
+}
+
+#[test]
+fn metadata_list_mixed_some_none_element_metadata() {
+    // A mix of elements with and without metadata should preserve each correctly.
+    let meta_a = meta(&["secret"], Some(&["admin"]), &["classified"]);
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(1), Some(meta_a.clone())),
+        AnnotatedObject::new(MontyObject::Int(2), None),
+        AnnotatedObject::new(MontyObject::Int(3), Some(meta_a.clone())),
+    ]);
+    let input = AnnotatedObject::from(input_list);
+
+    let (value, _) = run_with_meta("x", vec!["x"], vec![input]);
+    if let MontyObject::List(elements) = value {
+        assert_eq!(elements.len(), 3);
+        assert_eq!(elements[0].metadata, Some(meta_a.clone()));
+        assert_eq!(elements[1].metadata, None);
+        assert_eq!(elements[2].metadata, Some(meta_a));
+    } else {
+        panic!("expected List");
+    }
+}
+
+#[test]
+fn metadata_tuple_input_preserves_element_metadata() {
+    let meta_a = meta(&["src_a"], None, &[]);
+    let meta_b = meta(&["src_b"], None, &["tag"]);
+    let input_tuple = MontyObject::Tuple(vec![
+        AnnotatedObject::new(MontyObject::Int(10), Some(meta_a.clone())),
+        AnnotatedObject::new(MontyObject::String("hi".to_string()), Some(meta_b.clone())),
+    ]);
+    let input = AnnotatedObject::from(input_tuple);
+
+    let (value, _) = run_with_meta("x", vec!["x"], vec![input]);
+    if let MontyObject::Tuple(elements) = value {
+        assert_eq!(elements.len(), 2);
+        assert_eq!(elements[0].value, MontyObject::Int(10));
+        assert_eq!(elements[0].metadata, Some(meta_a));
+        assert_eq!(elements[1].value, MontyObject::String("hi".to_string()));
+        assert_eq!(elements[1].metadata, Some(meta_b));
+    } else {
+        panic!("expected Tuple, got {value:?}");
+    }
+}
+
+#[test]
+fn metadata_dict_input_preserves_key_and_value_metadata() {
+    use monty::AnnotatedDictPairs;
+    let meta_key = meta(&["key_src"], None, &[]);
+    let meta_val = meta(&["val_src"], Some(&["viewer"]), &["sensitive"]);
+    let input_dict = MontyObject::Dict(AnnotatedDictPairs(vec![(
+        AnnotatedObject::new(MontyObject::String("k".to_string()), Some(meta_key.clone())),
+        AnnotatedObject::new(MontyObject::Int(42), Some(meta_val.clone())),
+    )]));
+    let input = AnnotatedObject::from(input_dict);
+
+    let (value, _) = run_with_meta("x", vec!["x"], vec![input]);
+    if let MontyObject::Dict(pairs) = value {
+        let entries: Vec<_> = pairs.into_iter().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0.value, MontyObject::String("k".to_string()));
+        assert_eq!(entries[0].0.metadata, Some(meta_key));
+        assert_eq!(entries[0].1.value, MontyObject::Int(42));
+        assert_eq!(entries[0].1.metadata, Some(meta_val));
+    } else {
+        panic!("expected Dict, got {value:?}");
+    }
+}
+
+#[test]
+fn metadata_nested_list_preserves_inner_element_metadata() {
+    // A list containing a list: inner elements should preserve their metadata.
+    let meta_inner = meta(&["deep_source"], None, &["nested"]);
+    let inner_list = MontyObject::List(vec![AnnotatedObject::new(
+        MontyObject::Int(99),
+        Some(meta_inner.clone()),
+    )]);
+    let input_list = MontyObject::List(vec![AnnotatedObject::new(inner_list, None)]);
+    let input = AnnotatedObject::from(input_list);
+
+    let (value, _) = run_with_meta("x", vec!["x"], vec![input]);
+    if let MontyObject::List(outer) = value {
+        assert_eq!(outer.len(), 1);
+        assert_eq!(outer[0].metadata, None); // outer element has no metadata
+        if let MontyObject::List(inner) = &outer[0].value {
+            assert_eq!(inner.len(), 1);
+            assert_eq!(inner[0].value, MontyObject::Int(99));
+            assert_eq!(inner[0].metadata, Some(meta_inner));
+        } else {
+            panic!("expected inner List");
+        }
+    } else {
+        panic!("expected outer List");
+    }
+}
+
+#[test]
+fn metadata_list_indexing_extracts_element_metadata() {
+    // Extracting an element from a list via indexing should propagate that
+    // element's metadata to the result, not the container's.
+    let meta_elem = meta(&["elem_src"], None, &["tagged"]);
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(10), None),
+        AnnotatedObject::new(MontyObject::Int(20), Some(meta_elem.clone())),
+    ]);
+    let input = AnnotatedObject::from(input_list);
+
+    let (value, out_meta) = run_with_meta("x[1]", vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(20));
+    assert_eq!(out_meta, Some(meta_elem));
+}
+
+#[test]
+fn metadata_list_append_preserves_existing_element_metadata() {
+    // Appending to a list (via Python code) should not disturb existing elements' metadata.
+    let meta_a = meta(&["src_a"], None, &[]);
+    let expected_meta = meta_a.clone();
+    let input_list = MontyObject::List(vec![AnnotatedObject::new(MontyObject::Int(1), Some(meta_a))]);
+    let input = AnnotatedObject::from(input_list);
+
+    let code = "x.append(99)\nx";
+    let (value, _) = run_with_meta(code, vec!["x"], vec![input]);
+    if let MontyObject::List(elements) = value {
+        assert_eq!(elements.len(), 2);
+        // Original element keeps its metadata
+        assert_eq!(elements[0].value, MontyObject::Int(1));
+        assert_eq!(elements[0].metadata, Some(expected_meta));
+        // Appended element has no provenance metadata (literal)
+        assert_eq!(elements[1].value, MontyObject::Int(99));
+        assert_eq!(elements[1].metadata, None);
+    } else {
+        panic!("expected List");
+    }
+}
+
+#[test]
+fn metadata_unpacking_preserves_element_metadata() {
+    // Unpacking a list should propagate each element's metadata to its variable.
+    let meta_a = meta(&["src_a"], None, &[]);
+    let meta_b = meta(&["src_b"], None, &[]);
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(1), Some(meta_a)),
+        AnnotatedObject::new(MontyObject::Int(2), Some(meta_b.clone())),
+    ]);
+    let input = AnnotatedObject::from(input_list);
+
+    // Unpack into a, b, then return b — should carry meta_b
+    let (value, out_meta) = run_with_meta("a, b = x\nb", vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(2));
+    assert_eq!(out_meta, Some(meta_b));
+}

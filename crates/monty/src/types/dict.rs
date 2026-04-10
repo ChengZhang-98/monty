@@ -135,6 +135,45 @@ impl Dict {
         Ok(dict_guard.into_inner())
     }
 
+    /// Creates a dict from a vector of `(key, key_meta, value, value_meta)` tuples.
+    ///
+    /// Like [`from_pairs`](Dict::from_pairs) but also stores per-key and per-value metadata.
+    /// Splits the 4-tuples into `(key, value)` pairs (for `DropWithHeap`) and a separate
+    /// metadata vector, since `MetadataId` doesn't hold heap references.
+    pub fn from_pairs_with_metadata(
+        pairs: Vec<(Value, MetadataId, Value, MetadataId)>,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
+    ) -> RunResult<Self> {
+        let cap = pairs.len();
+        let mut kv_pairs = Vec::with_capacity(cap);
+        let mut meta_pairs = Vec::with_capacity(cap);
+        for (k, km, v, vm_) in pairs {
+            kv_pairs.push((k, v));
+            meta_pairs.push((km, vm_));
+        }
+        let kv_iter = kv_pairs.into_iter();
+        defer_drop_mut!(kv_iter, vm);
+        let dict = Self::with_capacity(cap);
+        let mut dict_guard = HeapGuard::new(dict, vm);
+        let (dict, vm) = dict_guard.as_parts_mut();
+        for ((key, value), (key_meta, value_meta)) in kv_iter.zip(meta_pairs) {
+            if let Some(old_value) = dict.set_with_meta(key, key_meta, value, value_meta, vm)? {
+                old_value.drop_with_heap(vm);
+            }
+        }
+        Ok(dict_guard.into_inner())
+    }
+
+    /// Returns an iterator over `(key, key_meta, value, value_meta)` tuples.
+    ///
+    /// This provides access to per-key and per-value metadata stored in the dict,
+    /// which is used when converting the dict to a `MontyObject` at API boundaries.
+    pub fn entries_with_metadata(&self) -> impl Iterator<Item = (&Value, MetadataId, &Value, MetadataId)> {
+        self.entries
+            .iter()
+            .map(|e| (&e.key, e.key_meta, &e.value, e.value_meta))
+    }
+
     /// Inserts a JSON object entry whose key is guaranteed to be a string.
     ///
     /// This specialized path avoids the generic `py_eq`/candidate-cloning lookup

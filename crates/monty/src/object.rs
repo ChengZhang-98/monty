@@ -18,9 +18,10 @@ use crate::{
     bytecode::VM,
     exception_private::{ExcType, RunError, SimpleException},
     heap::{HeapData, HeapId},
+    metadata::{AnnotatedObject, MetadataId, MetadataStore, ObjectMetadata},
     resource::{ResourceError, ResourceTracker},
     types::{
-        LongInt, NamedTuple, Path, PyTrait, TimeZone, Type, allocate_tuple,
+        LongInt, NamedTuple, Path, PyTrait, TimeZone, Tuple, Type,
         bytes::{Bytes, bytes_repr},
         date as date_type, datetime as datetime_type,
         dict::Dict,
@@ -252,9 +253,14 @@ pub enum MontyObject {
     /// Python bytes object.
     Bytes(Vec<u8>),
     /// Python list (mutable sequence).
-    List(Vec<Self>),
+    ///
+    /// Each element is an [`AnnotatedObject`] so per-element metadata survives
+    /// the API boundary (function call args, resume return values, etc.).
+    List(Vec<AnnotatedObject>),
     /// Python tuple (immutable sequence).
-    Tuple(Vec<Self>),
+    ///
+    /// Each element is an [`AnnotatedObject`] carrying per-element metadata.
+    Tuple(Vec<AnnotatedObject>),
     /// Python named tuple (immutable sequence with named fields).
     ///
     /// Named tuples behave like tuples but also support attribute access by field name.
@@ -265,15 +271,22 @@ pub enum MontyObject {
         type_name: String,
         /// Field names in order.
         field_names: Vec<String>,
-        /// Values in order (same length as field_names).
-        values: Vec<Self>,
+        /// Values in order (same length as field_names), each carrying optional metadata.
+        values: Vec<AnnotatedObject>,
     },
     /// Python dictionary (insertion-ordered mapping).
-    Dict(DictPairs),
+    ///
+    /// Both keys and values are [`AnnotatedObject`] so per-element metadata survives
+    /// the API boundary.
+    Dict(AnnotatedDictPairs),
     /// Python set (mutable, unordered collection of unique elements).
-    Set(Vec<Self>),
+    ///
+    /// Each element is an [`AnnotatedObject`] carrying per-element metadata.
+    Set(Vec<AnnotatedObject>),
     /// Python frozenset (immutable, unordered collection of unique elements).
-    FrozenSet(Vec<Self>),
+    ///
+    /// Each element is an [`AnnotatedObject`] carrying per-element metadata.
+    FrozenSet(Vec<AnnotatedObject>),
     /// Python `datetime.date`.
     Date(MontyDate),
     /// Python `datetime.datetime`.
@@ -311,7 +324,8 @@ pub enum MontyObject {
         /// Declared field names in definition order (for repr).
         field_names: Vec<String>,
         /// All attribute name -> value mapping (includes fields and extra attrs).
-        attrs: DictPairs,
+        /// Both keys and values carry optional per-element metadata.
+        attrs: AnnotatedDictPairs,
         /// Whether this dataclass instance is immutable.
         frozen: bool,
     },
@@ -374,8 +388,8 @@ impl MontyObject {
         py_obj
     }
 
-    /// Creates a new `MontyObject` from something that can be converted into a `DictPairs`.
-    pub fn dict(dict: impl Into<DictPairs>) -> Self {
+    /// Creates a new `MontyObject` from something that can be converted into an `AnnotatedDictPairs`.
+    pub fn dict(dict: impl Into<AnnotatedDictPairs>) -> Self {
         Self::Dict(dict.into())
     }
 
@@ -399,46 +413,46 @@ impl MontyObject {
             Self::String(s) => Ok(Value::Ref(vm.heap.allocate(HeapData::Str(Str::new(s)))?)),
             Self::Bytes(b) => Ok(Value::Ref(vm.heap.allocate(HeapData::Bytes(Bytes::new(b)))?)),
             Self::List(items) => {
-                let values: Vec<Value> = items
-                    .into_iter()
-                    .map(|item| item.to_value(vm))
-                    .collect::<Result<_, _>>()?;
-                Ok(Value::Ref(vm.heap.allocate(HeapData::List(List::new(values)))?))
+                let (values, meta_ids) = annotated_items_to_values(items, vm)?;
+                Ok(Value::Ref(
+                    vm.heap
+                        .allocate(HeapData::List(List::new_with_metadata(values, meta_ids)))?,
+                ))
             }
             Self::Tuple(items) => {
-                let values = items
-                    .into_iter()
-                    .map(|item| item.to_value(vm))
-                    .collect::<Result<_, _>>()?;
-                allocate_tuple(values, vm.heap).map_err(InvalidInputError::Resource)
+                let (values, meta_ids) = annotated_items_to_values(items, vm)?;
+                let tuple = Tuple::new_with_metadata(values.into(), meta_ids.into());
+                Ok(Value::Ref(vm.heap.allocate(HeapData::Tuple(tuple))?))
             }
             Self::NamedTuple {
                 type_name,
                 field_names,
                 values,
             } => {
-                let values: Vec<Value> = values
-                    .into_iter()
-                    .map(|item| item.to_value(vm))
-                    .collect::<Result<_, _>>()?;
+                let (vals, meta_ids) = annotated_items_to_values(values, vm)?;
                 let field_name_strs: Vec<EitherStr> = field_names.into_iter().map(Into::into).collect();
-                let nt = NamedTuple::new(type_name, field_name_strs, values);
+                let nt = NamedTuple::new_with_metadata(type_name, field_name_strs, vals, meta_ids);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::NamedTuple(nt))?))
             }
             Self::Dict(map) => {
-                let pairs: Result<Vec<(Value, Value)>, InvalidInputError> = map
+                let pairs: Result<Vec<_>, InvalidInputError> = map
                     .into_iter()
-                    .map(|(k, v)| Ok((k.to_value(vm)?, v.to_value(vm)?)))
+                    .map(|(k, v)| {
+                        let k_meta = intern_opt_metadata(k.metadata.as_ref(), &mut vm.metadata_store);
+                        let v_meta = intern_opt_metadata(v.metadata.as_ref(), &mut vm.metadata_store);
+                        Ok((k.value.to_value(vm)?, k_meta, v.value.to_value(vm)?, v_meta))
+                    })
                     .collect();
-                let dict = Dict::from_pairs(pairs?, vm)
+                let dict = Dict::from_pairs_with_metadata(pairs?, vm)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable dict keys"))?;
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Dict(dict))?))
             }
             Self::Set(items) => {
                 let mut set = Set::new();
                 for item in items {
-                    let value = item.to_value(vm)?;
-                    set.add(value, vm)
+                    let meta_id = intern_opt_metadata(item.metadata.as_ref(), &mut vm.metadata_store);
+                    let value = item.value.to_value(vm)?;
+                    set.add_with_meta(value, meta_id, vm)
                         .map_err(|_| InvalidInputError::invalid_type("unhashable set element"))?;
                 }
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Set(set))?))
@@ -446,11 +460,11 @@ impl MontyObject {
             Self::FrozenSet(items) => {
                 let mut set = Set::new();
                 for item in items {
-                    let value = item.to_value(vm)?;
-                    set.add(value, vm)
+                    let meta_id = intern_opt_metadata(item.metadata.as_ref(), &mut vm.metadata_store);
+                    let value = item.value.to_value(vm)?;
+                    set.add_with_meta(value, meta_id, vm)
                         .map_err(|_| InvalidInputError::invalid_type("unhashable frozenset element"))?;
                 }
-                // Convert to frozenset by extracting storage
                 let frozenset = FrozenSet::from_set(set);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::FrozenSet(frozenset))?))
             }
@@ -521,12 +535,15 @@ impl MontyObject {
                 frozen,
             } => {
                 use crate::types::Dataclass;
-                // Convert attrs to Dict
-                let pairs: Result<Vec<(Value, Value)>, InvalidInputError> = attrs
+                let pairs: Result<Vec<_>, InvalidInputError> = attrs
                     .into_iter()
-                    .map(|(k, v)| Ok((k.to_value(vm)?, v.to_value(vm)?)))
+                    .map(|(k, v)| {
+                        let k_meta = intern_opt_metadata(k.metadata.as_ref(), &mut vm.metadata_store);
+                        let v_meta = intern_opt_metadata(v.metadata.as_ref(), &mut vm.metadata_store);
+                        Ok((k.value.to_value(vm)?, k_meta, v.value.to_value(vm)?, v_meta))
+                    })
                     .collect();
-                let dict = Dict::from_pairs(pairs?, vm)
+                let dict = Dict::from_pairs_with_metadata(pairs?, vm)
                     .map_err(|_| InvalidInputError::invalid_type("unhashable dataclass attr keys"))?;
                 let dc = Dataclass::new(name, type_id, field_names, dict, frozen);
                 Ok(Value::Ref(vm.heap.allocate(HeapData::Dataclass(dc))?))
@@ -601,14 +618,24 @@ impl MontyObject {
                     HeapData::List(list) => Self::List(
                         list.as_slice()
                             .iter()
-                            .map(|obj| Self::from_value_inner(obj, vm, visited))
+                            .enumerate()
+                            .map(|(i, obj)| {
+                                let child = Self::from_value_inner(obj, vm, visited);
+                                let meta = vm.metadata_store.to_object_metadata(list.item_meta(i));
+                                AnnotatedObject::new(child, meta)
+                            })
                             .collect(),
                     ),
                     HeapData::Tuple(tuple) => Self::Tuple(
                         tuple
                             .as_slice()
                             .iter()
-                            .map(|obj| Self::from_value_inner(obj, vm, visited))
+                            .enumerate()
+                            .map(|(i, obj)| {
+                                let child = Self::from_value_inner(obj, vm, visited);
+                                let meta = vm.metadata_store.to_object_metadata(tuple.item_meta(i));
+                                AnnotatedObject::new(child, meta)
+                            })
                             .collect(),
                     ),
                     HeapData::NamedTuple(nt) => Self::NamedTuple {
@@ -621,30 +648,45 @@ impl MontyObject {
                         values: nt
                             .as_vec()
                             .iter()
-                            .map(|obj| Self::from_value_inner(obj, vm, visited))
+                            .enumerate()
+                            .map(|(i, obj)| {
+                                let child = Self::from_value_inner(obj, vm, visited);
+                                let meta = vm.metadata_store.to_object_metadata(nt.item_meta(i));
+                                AnnotatedObject::new(child, meta)
+                            })
                             .collect(),
                     },
-                    HeapData::Dict(dict) => Self::Dict(DictPairs(
-                        dict.into_iter()
-                            .map(|(k, v)| {
+                    HeapData::Dict(dict) => Self::Dict(AnnotatedDictPairs(
+                        dict.entries_with_metadata()
+                            .map(|(k, k_meta, v, v_meta)| {
+                                let k_obj = Self::from_value_inner(k, vm, visited);
+                                let k_meta_obj = vm.metadata_store.to_object_metadata(k_meta);
+                                let v_obj = Self::from_value_inner(v, vm, visited);
+                                let v_meta_obj = vm.metadata_store.to_object_metadata(v_meta);
                                 (
-                                    Self::from_value_inner(k, vm, visited),
-                                    Self::from_value_inner(v, vm, visited),
+                                    AnnotatedObject::new(k_obj, k_meta_obj),
+                                    AnnotatedObject::new(v_obj, v_meta_obj),
                                 )
                             })
                             .collect(),
                     )),
                     HeapData::Set(set) => Self::Set(
-                        set.storage()
-                            .iter()
-                            .map(|obj| Self::from_value_inner(obj, vm, visited))
+                        set.entries_with_metadata()
+                            .map(|(obj, meta)| {
+                                let child = Self::from_value_inner(obj, vm, visited);
+                                let meta_obj = vm.metadata_store.to_object_metadata(meta);
+                                AnnotatedObject::new(child, meta_obj)
+                            })
                             .collect(),
                     ),
                     HeapData::FrozenSet(frozenset) => Self::FrozenSet(
                         frozenset
-                            .storage()
-                            .iter()
-                            .map(|obj| Self::from_value_inner(obj, vm, visited))
+                            .entries_with_metadata()
+                            .map(|(obj, meta)| {
+                                let child = Self::from_value_inner(obj, vm, visited);
+                                let meta_obj = vm.metadata_store.to_object_metadata(meta);
+                                AnnotatedObject::new(child, meta_obj)
+                            })
                             .collect(),
                     ),
                     HeapData::Date(date) => {
@@ -698,14 +740,17 @@ impl MontyObject {
                         arg: exc.arg().map(ToString::to_string),
                     },
                     HeapData::Dataclass(dc) => {
-                        // Convert attrs to DictPairs
-                        let attrs = DictPairs(
+                        let attrs = AnnotatedDictPairs(
                             dc.attrs()
-                                .into_iter()
-                                .map(|(k, v)| {
+                                .entries_with_metadata()
+                                .map(|(k, k_meta, v, v_meta)| {
+                                    let k_obj = Self::from_value_inner(k, vm, visited);
+                                    let k_meta_obj = vm.metadata_store.to_object_metadata(k_meta);
+                                    let v_obj = Self::from_value_inner(v, vm, visited);
+                                    let v_meta_obj = vm.metadata_store.to_object_metadata(v_meta);
                                     (
-                                        Self::from_value_inner(k, vm, visited),
-                                        Self::from_value_inner(v, vm, visited),
+                                        AnnotatedObject::new(k_obj, k_meta_obj),
+                                        AnnotatedObject::new(v_obj, v_meta_obj),
                                     )
                                 })
                                 .collect(),
@@ -832,10 +877,10 @@ impl MontyObject {
                 f.write_char('[')?;
                 let mut iter = l.iter();
                 if let Some(first) = iter.next() {
-                    first.repr_fmt(f)?;
+                    first.value.repr_fmt(f)?;
                     for item in iter {
                         f.write_str(", ")?;
-                        item.repr_fmt(f)?;
+                        item.value.repr_fmt(f)?;
                     }
                 }
                 f.write_char(']')
@@ -844,10 +889,10 @@ impl MontyObject {
                 f.write_char('(')?;
                 let mut iter = t.iter();
                 if let Some(first) = iter.next() {
-                    first.repr_fmt(f)?;
+                    first.value.repr_fmt(f)?;
                     for item in iter {
                         f.write_str(", ")?;
-                        item.repr_fmt(f)?;
+                        item.value.repr_fmt(f)?;
                     }
                 }
                 f.write_char(')')
@@ -868,7 +913,7 @@ impl MontyObject {
                     first = false;
                     f.write_str(name)?;
                     f.write_char('=')?;
-                    value.repr_fmt(f)?;
+                    value.value.repr_fmt(f)?;
                 }
                 f.write_char(')')
             }
@@ -876,14 +921,14 @@ impl MontyObject {
                 f.write_char('{')?;
                 let mut iter = d.iter();
                 if let Some((k, v)) = iter.next() {
-                    k.repr_fmt(f)?;
+                    k.value.repr_fmt(f)?;
                     f.write_str(": ")?;
-                    v.repr_fmt(f)?;
+                    v.value.repr_fmt(f)?;
                     for (k, v) in iter {
                         f.write_str(", ")?;
-                        k.repr_fmt(f)?;
+                        k.value.repr_fmt(f)?;
                         f.write_str(": ")?;
-                        v.repr_fmt(f)?;
+                        v.value.repr_fmt(f)?;
                     }
                 }
                 f.write_char('}')
@@ -895,10 +940,10 @@ impl MontyObject {
                     f.write_char('{')?;
                     let mut iter = s.iter();
                     if let Some(first) = iter.next() {
-                        first.repr_fmt(f)?;
+                        first.value.repr_fmt(f)?;
                         for item in iter {
                             f.write_str(", ")?;
-                            item.repr_fmt(f)?;
+                            item.value.repr_fmt(f)?;
                         }
                     }
                     f.write_char('}')
@@ -910,10 +955,10 @@ impl MontyObject {
                     f.write_char('{')?;
                     let mut iter = fs.iter();
                     if let Some(first) = iter.next() {
-                        first.repr_fmt(f)?;
+                        first.value.repr_fmt(f)?;
                         for item in iter {
                             f.write_str(", ")?;
-                            item.repr_fmt(f)?;
+                            item.value.repr_fmt(f)?;
                         }
                     }
                     f.write_char('}')?;
@@ -1012,8 +1057,8 @@ impl MontyObject {
                     f.write_char('=')?;
                     // Look up value in attrs
                     let key = Self::String(field_name.clone());
-                    if let Some(value) = attrs.iter().find(|(k, _)| k == &key).map(|(_, v)| v) {
-                        value.repr_fmt(f)?;
+                    if let Some(value) = attrs.iter().find(|(k, _)| k.value == key).map(|(_, v)| v) {
+                        value.value.repr_fmt(f)?;
                     } else {
                         f.write_str("<?>")?;
                     }
@@ -1423,11 +1468,114 @@ impl FromIterator<(MontyObject, MontyObject)> for DictPairs {
 }
 
 impl DictPairs {
-    fn is_empty(&self) -> bool {
+    /// Returns `true` if the collection is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
 
-    fn iter(&self) -> impl Iterator<Item = &(MontyObject, MontyObject)> {
+    /// Returns an iterator over references to the key-value pairs.
+    pub fn iter(&self) -> impl Iterator<Item = &(MontyObject, MontyObject)> {
         self.0.iter()
+    }
+}
+
+/// A collection of annotated key-value pairs for Python dictionary contents.
+///
+/// Like [`DictPairs`] but each key and value is an [`AnnotatedObject`] carrying
+/// optional per-element metadata. Used by `MontyObject::Dict` and
+/// `MontyObject::Dataclass` to preserve metadata through API boundaries.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AnnotatedDictPairs(pub Vec<(AnnotatedObject, AnnotatedObject)>);
+
+impl AnnotatedDictPairs {
+    /// Returns `true` if the collection is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Returns an iterator over references to the annotated key-value pairs.
+    pub fn iter(&self) -> impl Iterator<Item = &(AnnotatedObject, AnnotatedObject)> {
+        self.0.iter()
+    }
+}
+
+impl IntoIterator for AnnotatedDictPairs {
+    type Item = (AnnotatedObject, AnnotatedObject);
+    type IntoIter = IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a AnnotatedDictPairs {
+    type Item = &'a (AnnotatedObject, AnnotatedObject);
+    type IntoIter = slice::Iter<'a, (AnnotatedObject, AnnotatedObject)>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl FromIterator<(AnnotatedObject, AnnotatedObject)> for AnnotatedDictPairs {
+    fn from_iter<T: IntoIterator<Item = (AnnotatedObject, AnnotatedObject)>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
+/// Convenience conversion from bare `MontyObject` pairs (no metadata).
+impl From<Vec<(MontyObject, MontyObject)>> for AnnotatedDictPairs {
+    fn from(pairs: Vec<(MontyObject, MontyObject)>) -> Self {
+        Self(
+            pairs
+                .into_iter()
+                .map(|(k, v)| (AnnotatedObject::from(k), AnnotatedObject::from(v)))
+                .collect(),
+        )
+    }
+}
+
+/// Convenience conversion from an `IndexMap<MontyObject, MontyObject>` (no metadata).
+impl From<IndexMap<MontyObject, MontyObject>> for AnnotatedDictPairs {
+    fn from(map: IndexMap<MontyObject, MontyObject>) -> Self {
+        Self::from(map.into_iter().collect::<Vec<_>>())
+    }
+}
+
+/// Convenience conversion from a `DictPairs` (no metadata).
+impl From<DictPairs> for AnnotatedDictPairs {
+    fn from(pairs: DictPairs) -> Self {
+        Self(
+            pairs
+                .into_iter()
+                .map(|(k, v)| (AnnotatedObject::from(k), AnnotatedObject::from(v)))
+                .collect(),
+        )
+    }
+}
+
+/// Converts annotated items to values and metadata IDs for container constructors.
+fn annotated_items_to_values(
+    items: Vec<AnnotatedObject>,
+    vm: &mut VM<'_, '_, impl ResourceTracker>,
+) -> Result<(Vec<Value>, Vec<MetadataId>), InvalidInputError> {
+    let mut values = Vec::with_capacity(items.len());
+    let mut meta_ids = Vec::with_capacity(items.len());
+    for item in items {
+        let meta_id = intern_opt_metadata(item.metadata.as_ref(), &mut vm.metadata_store);
+        values.push(item.value.to_value(vm)?);
+        meta_ids.push(meta_id);
+    }
+    Ok((values, meta_ids))
+}
+
+/// Interns an optional `ObjectMetadata` into the store, returning `MetadataId::DEFAULT`
+/// when `None`.
+fn intern_opt_metadata(meta: Option<&ObjectMetadata>, store: &mut MetadataStore) -> MetadataId {
+    match meta {
+        Some(m) => store.intern_object_metadata(m),
+        None => MetadataId::DEFAULT,
     }
 }

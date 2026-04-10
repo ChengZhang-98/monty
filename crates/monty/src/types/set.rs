@@ -157,9 +157,17 @@ impl SetStorage {
     }
 
     /// Returns the metadata for the element at the given index.
-    #[expect(dead_code, reason = "will be used for iteration element metadata")]
+    #[expect(dead_code, reason = "useful for index-based element metadata access")]
     pub fn meta_at(&self, index: usize) -> MetadataId {
         self.entries[index].meta
+    }
+
+    /// Returns an iterator over `(value, metadata)` pairs.
+    ///
+    /// Used when converting to `MontyObject` at API boundaries so per-element
+    /// metadata survives the conversion.
+    pub fn entries_with_metadata(&self) -> impl Iterator<Item = (&Value, MetadataId)> {
+        self.entries.iter().map(|e| (&e.value, e.meta))
     }
 }
 
@@ -638,6 +646,11 @@ impl Set {
     /// storage implementation.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Value> {
         self.0.iter()
+    }
+
+    /// Returns an iterator over `(value, metadata)` pairs in insertion order.
+    pub(crate) fn entries_with_metadata(&self) -> impl Iterator<Item = (&Value, MetadataId)> {
+        self.0.entries_with_metadata()
     }
 
     /// Creates a set from the `set()` constructor call.
@@ -1218,6 +1231,11 @@ impl FrozenSet {
     /// Returns the internal storage.
     pub(crate) fn storage(&self) -> &SetStorage {
         &self.0
+    }
+
+    /// Returns an iterator over `(value, metadata)` pairs in insertion order.
+    pub(crate) fn entries_with_metadata(&self) -> impl Iterator<Item = (&Value, MetadataId)> {
+        self.0.entries_with_metadata()
     }
 }
 

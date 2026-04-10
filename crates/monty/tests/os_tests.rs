@@ -242,9 +242,9 @@ len(entries)
 ";
     // Return a list of path strings (simulating directory entries)
     let mock_entries = MontyObject::List(vec![
-        MontyObject::String("/tmp/file1.txt".to_owned()),
-        MontyObject::String("/tmp/file2.txt".to_owned()),
-        MontyObject::String("/tmp/subdir".to_owned()),
+        MontyObject::String("/tmp/file1.txt".to_owned()).into(),
+        MontyObject::String("/tmp/file2.txt".to_owned()).into(),
+        MontyObject::String("/tmp/subdir".to_owned()).into(),
     ]);
     let (func, args, result) = run_oscall_with_result(code, mock_entries);
 
@@ -261,8 +261,8 @@ entries = Path('/home/user').iterdir()
 entries[0]
 ";
     let mock_entries = MontyObject::List(vec![
-        MontyObject::String("/home/user/documents".to_owned()),
-        MontyObject::String("/home/user/downloads".to_owned()),
+        MontyObject::String("/home/user/documents".to_owned()).into(),
+        MontyObject::String("/home/user/downloads".to_owned()).into(),
     ]);
     let (func, args, result) = run_oscall_with_result(code, mock_entries);
 
@@ -314,7 +314,7 @@ info = Path('/var/log/syslog').stat()
     assert_eq!(args[0], MontyObject::Path("/var/log/syslog".to_owned()));
     assert_eq!(
         result,
-        MontyObject::Tuple(vec![MontyObject::Int(4096), MontyObject::Int(0o100_644)])
+        MontyObject::Tuple(vec![MontyObject::Int(4096).into(), MontyObject::Int(0o100_644).into()])
     );
 }
 

@@ -88,13 +88,13 @@ fn repl_heap_mutations_are_not_replayed() {
     feed_run_print(&mut repl, "items.append(1)").unwrap();
     assert_eq!(
         feed_run_print(&mut repl, "items").unwrap(),
-        MontyObject::List(vec![MontyObject::Int(1)])
+        MontyObject::List(vec![MontyObject::Int(1).into()])
     );
 
     feed_run_print(&mut repl, "items.append(2)").unwrap();
     assert_eq!(
         feed_run_print(&mut repl, "items").unwrap(),
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])
+        MontyObject::List(vec![MontyObject::Int(1).into(), MontyObject::Int(2).into()])
     );
 }
 
@@ -153,11 +153,11 @@ fn repl_dump_load_preserves_heap_aliasing() {
     feed_run_print(&mut loaded, "b.append(2)").unwrap();
     assert_eq!(
         feed_run_print(&mut loaded, "a").unwrap(),
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])
+        MontyObject::List(vec![MontyObject::Int(1).into(), MontyObject::Int(2).into()])
     );
     assert_eq!(
         feed_run_print(&mut loaded, "b").unwrap(),
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])
+        MontyObject::List(vec![MontyObject::Int(1).into(), MontyObject::Int(2).into()])
     );
 }
 
@@ -289,11 +289,10 @@ fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
         name: "Point".to_string(),
         type_id: 0,
         field_names: vec!["x".to_string(), "y".to_string()],
-        attrs: vec![
+        attrs: monty::AnnotatedDictPairs::from(vec![
             (MontyObject::String("x".to_string()), MontyObject::Int(1)),
             (MontyObject::String("y".to_string()), MontyObject::Int(2)),
-        ]
-        .into(),
+        ]),
         frozen: true,
     };
 

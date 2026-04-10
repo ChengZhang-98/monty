@@ -30,6 +30,7 @@ use crate::{
     exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
+    metadata::{PyObjectMetadata, py_to_annotated, rust_meta_to_py},
     mount::OsHandler,
     repl::{EitherRepl, FromCoreRepl, PyMontyRepl},
     serialization,
@@ -375,7 +376,7 @@ impl PyMonty {
     fn run_async_with_tracker<T, F>(
         py: Python<'_>,
         runner: MontyRun,
-        input_values: Vec<MontyObject>,
+        input_values: Vec<::monty::AnnotatedObject>,
         external_functions: Option<Py<PyDict>>,
         os: Option<Py<PyAny>>,
         dc_registry: DcRegistry,
@@ -430,7 +431,7 @@ impl PyMonty {
         &self,
         inputs: Option<&Bound<'_, PyDict>>,
         dc_registry: &DcRegistry,
-    ) -> PyResult<Vec<::monty::MontyObject>> {
+    ) -> PyResult<Vec<::monty::AnnotatedObject>> {
         if self.input_names.is_empty() {
             if inputs.is_some() {
                 return Err(PyTypeError::new_err(
@@ -447,14 +448,14 @@ impl PyMonty {
             )));
         };
 
-        // Extract values in declaration order
+        // Extract values in declaration order, detecting AnnotatedValue for metadata
         self.input_names
             .iter()
             .map(|name| {
                 let value = inputs
                     .get_item(name)?
                     .ok_or_else(|| PyKeyError::new_err(format!("Missing required input: '{name}'")))?;
-                py_to_monty(&value, dc_registry)
+                py_to_annotated(&value, dc_registry)
             })
             .collect::<PyResult<_>>()
     }
@@ -467,7 +468,7 @@ impl PyMonty {
     fn run_impl(
         &self,
         py: Python<'_>,
-        input_values: Vec<MontyObject>,
+        input_values: Vec<::monty::AnnotatedObject>,
         tracker: impl ResourceTracker + Send,
         external_functions: Option<&Bound<'_, PyDict>>,
         os_handler: Option<OsHandler>,
@@ -480,7 +481,7 @@ impl PyMonty {
         // Check if any inputs contain dataclasses (including nested in containers) —
         // if so, we need the iterative path because method calls could happen lazily
         // and need to be dispatched to the host.
-        let has_dataclass_inputs = || input_values.iter().any(contains_dataclass);
+        let has_dataclass_inputs = || input_values.iter().any(|a| contains_dataclass(&a.value));
 
         if external_functions.is_none() && os_handler.is_none() && !has_dataclass_inputs() {
             return match py.detach(|| self.runner.run(input_values, tracker, print_output.reborrow())) {
@@ -628,7 +629,7 @@ where
     EitherFutureSnapshot: FromResolveFutures<T>,
 {
     match progress {
-        RunProgress::Complete(annotated) => PyMontyComplete::create(py, &annotated.value, &dc_registry),
+        RunProgress::Complete(annotated) => PyMontyComplete::create(py, &annotated, &dc_registry),
         RunProgress::FunctionCall(call) => {
             PyFunctionSnapshot::function_call(py, call, script_name, print_callback, dc_registry)
         }
@@ -663,7 +664,8 @@ where
     match progress {
         ReplProgress::Complete { repl, value } => {
             repl_owner.get().put_repl(EitherRepl::from_core(repl));
-            PyMontyComplete::create(py, &value, &dc_registry)
+            // REPL path doesn't carry metadata yet — wrap as no-metadata AnnotatedObject
+            PyMontyComplete::create(py, &::monty::AnnotatedObject::from(value), &dc_registry)
         }
         ReplProgress::FunctionCall(call) => {
             PyFunctionSnapshot::repl_function_call(py, call, script_name, print_callback, dc_registry, repl_owner)
@@ -1651,15 +1653,27 @@ impl PyFutureSnapshot {
 
 #[pyclass(name = "MontyComplete", module = "pydantic_monty", frozen)]
 pub struct PyMontyComplete {
+    /// The final output value from the executed code.
     #[pyo3(get)]
     pub output: Py<PyAny>,
-    // TODO we might want to add stats on execution here like time, allocations, etc.
+    /// Provenance metadata for the output value, or `None` if no metadata was tracked.
+    #[pyo3(get)]
+    pub metadata: Option<Py<PyObjectMetadata>>,
 }
 
 impl PyMontyComplete {
-    fn create<'py>(py: Python<'py>, output: &MontyObject, dc_registry: &DcRegistry) -> PyResult<Bound<'py, PyAny>> {
-        let output = monty_to_py(py, output, dc_registry)?;
-        let slf = Self { output };
+    fn create<'py>(
+        py: Python<'py>,
+        annotated: &::monty::AnnotatedObject,
+        dc_registry: &DcRegistry,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let output = monty_to_py(py, &annotated.value, dc_registry)?;
+        let metadata = annotated
+            .metadata
+            .as_ref()
+            .map(|m| rust_meta_to_py(py, m))
+            .transpose()?;
+        let slf = Self { output, metadata };
         slf.into_bound_py_any(py)
     }
 }
@@ -1855,10 +1869,10 @@ impl PrintWriterCallback for CallbackStructuredPrint {
 fn contains_dataclass(obj: &MontyObject) -> bool {
     match obj {
         MontyObject::Dataclass { .. } => true,
-        MontyObject::List(items) | MontyObject::Tuple(items) => items.iter().any(contains_dataclass),
+        MontyObject::List(items) | MontyObject::Tuple(items) => items.iter().any(|a| contains_dataclass(&a.value)),
         MontyObject::Dict(pairs) => pairs
             .into_iter()
-            .any(|(k, v)| contains_dataclass(k) || contains_dataclass(v)),
+            .any(|(k, v)| contains_dataclass(&k.value) || contains_dataclass(&v.value)),
         _ => false,
     }
 }
@@ -1889,8 +1903,9 @@ fn extract_external_result(
     if dict.len() != 1 {
         Err(PyTypeError::new_err(error_msg))
     } else if let Some(rv) = dict.get_item(intern!(py, "return_value"))? {
-        // Return value provided
-        Ok(py_to_monty(&rv, dc_registry)?.into())
+        // Return value provided — detect AnnotatedValue for metadata
+        let annotated = py_to_annotated(&rv, dc_registry)?;
+        Ok(annotated.into())
     } else if let Some(exc) = dict.get_item(intern!(py, "exception"))? {
         // Exception provided
         let py_err = PyErr::from_value(exc.into_any());

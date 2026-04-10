@@ -10,7 +10,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use ::monty::{DictPairs, MontyObject};
+use ::monty::{AnnotatedDictPairs, AnnotatedObject, MontyObject};
 use pyo3::{
     Bound,
     exceptions::{PyAttributeError, PyTypeError},
@@ -100,7 +100,7 @@ pub fn dataclass_to_py(
     name: &str,
     type_id: u64,
     field_names: &[String],
-    attrs: &DictPairs,
+    attrs: &AnnotatedDictPairs,
     frozen: bool,
     dc_registry: &DcRegistry,
 ) -> PyResult<Py<PyAny>> {
@@ -111,11 +111,11 @@ pub fn dataclass_to_py(
         let kwargs = PyDict::new(py);
         for (key, value) in attrs {
             // Skip non-string keys
-            if let MontyObject::String(s) = key {
+            if let MontyObject::String(s) = &key.value {
                 // Only include declared fields in constructor kwargs
                 let key_str = s.as_str();
                 if field_names.iter().any(|f| f.as_str() == key_str) {
-                    kwargs.set_item(key_str, monty_to_py(py, value, dc_registry)?)?;
+                    kwargs.set_item(key_str, monty_to_py(py, &value.value, dc_registry)?)?;
                 }
             }
         }
@@ -400,18 +400,21 @@ impl PyUnknownDataclass {
 }
 
 impl PyUnknownDataclass {
-    /// Creates a new `PyUnknownDataclass` from `MontyObject` fields.
+    /// Creates a new `PyUnknownDataclass` from annotated key-value pairs.
     pub fn new<'a>(
         py: Python<'_>,
         name: String,
         field_names: Vec<String>,
-        attrs: impl IntoIterator<Item = &'a (MontyObject, MontyObject)>,
+        attrs: impl IntoIterator<Item = &'a (AnnotatedObject, AnnotatedObject)>,
         frozen: bool,
         dc_registry: &DcRegistry,
     ) -> PyResult<Self> {
         let dict = PyDict::new(py);
         for (k, v) in attrs {
-            dict.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
+            dict.set_item(
+                monty_to_py(py, &k.value, dc_registry)?,
+                monty_to_py(py, &v.value, dc_registry)?,
+            )?;
         }
         Ok(Self {
             name,

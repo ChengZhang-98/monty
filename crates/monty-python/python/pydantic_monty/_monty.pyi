@@ -10,6 +10,8 @@ from .os_access import AbstractOS, OsFunction
 
 __all__ = [
     '__version__',
+    'AnnotatedValue',
+    'ObjectMetadata',
     'Monty',
     'MontyRepl',
     'MontyComplete',
@@ -655,12 +657,58 @@ class FutureSnapshot:
     def __repr__(self) -> str: ...
 
 @final
+class ObjectMetadata:
+    """Provenance metadata attached to a value.
+
+    Tracks where a value came from (producers), who may see it (consumers),
+    and classification labels (tags).
+    """
+
+    producers: frozenset[str]
+    """Source names that contributed to this value."""
+    consumers: frozenset[str] | None
+    """Allowed consumer names, or ``None`` for universal (no restriction)."""
+    tags: frozenset[str]
+    """Classification labels (e.g. ``"pii"``, ``"credential"``)."""
+
+    def __new__(
+        cls,
+        *,
+        producers: frozenset[str] | None = None,
+        consumers: frozenset[str] | None = None,
+        tags: frozenset[str] | None = None,
+    ) -> Self: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+
+@final
+class AnnotatedValue:
+    """A value paired with provenance metadata.
+
+    Use ``AnnotatedValue`` to attach metadata when passing inputs to
+    :meth:`Monty.run` / :meth:`Monty.start`, or when resuming a
+    :class:`FunctionSnapshot` with a return value.
+    """
+
+    value: Any
+    """The underlying Python value."""
+    metadata: ObjectMetadata
+    """The provenance metadata for this value."""
+
+    def __new__(cls, value: Any, metadata: ObjectMetadata) -> Self: ...
+    def __repr__(self) -> str: ...
+
+@final
 class MontyComplete:
     """The result of a completed code execution."""
 
     @property
     def output(self) -> Any:
         """The final output value from the executed code."""
+
+    @property
+    def metadata(self) -> ObjectMetadata | None:
+        """Provenance metadata for the output value, or ``None`` if not tracked."""
 
     def __repr__(self) -> str: ...
 

@@ -88,11 +88,14 @@ fn input_bytes() {
 fn input_list() {
     let ex = MontyRun::new("x".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])])
+        .run_no_limits(vec![MontyObject::List(vec![
+            MontyObject::Int(1).into(),
+            MontyObject::Int(2).into(),
+        ])])
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])
+        MontyObject::List(vec![MontyObject::Int(1).into(), MontyObject::Int(2).into()])
     );
 }
 
@@ -100,11 +103,18 @@ fn input_list() {
 fn input_list_append() {
     let ex = MontyRun::new("x.append(3)\nx".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2)])])
+        .run_no_limits(vec![MontyObject::List(vec![
+            MontyObject::Int(1).into(),
+            MontyObject::Int(2).into(),
+        ])])
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)])
+        MontyObject::List(vec![
+            MontyObject::Int(1).into(),
+            MontyObject::Int(2).into(),
+            MontyObject::Int(3).into()
+        ])
     );
 }
 
@@ -113,13 +123,16 @@ fn input_tuple() {
     let ex = MontyRun::new("x".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
     let result = ex
         .run_no_limits(vec![MontyObject::Tuple(vec![
-            MontyObject::Int(1),
-            MontyObject::String("two".to_string()),
+            MontyObject::Int(1).into(),
+            MontyObject::String("two".to_string()).into(),
         ])])
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::Tuple(vec![MontyObject::Int(1), MontyObject::String("two".to_string())])
+        MontyObject::Tuple(vec![
+            MontyObject::Int(1).into(),
+            MontyObject::String("two".to_string()).into()
+        ])
     );
 }
 
@@ -181,7 +194,10 @@ fn multiple_inputs_mixed_types() {
         .unwrap();
     assert_eq!(
         result,
-        MontyObject::List(vec![MontyObject::Int(1), MontyObject::String("two".to_string())])
+        MontyObject::List(vec![
+            MontyObject::Int(1).into(),
+            MontyObject::String("two".to_string()).into()
+        ])
     );
 }
 
@@ -198,10 +214,9 @@ fn no_inputs() {
 fn nested_list() {
     let ex = MontyRun::new("x[0][1]".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::List(vec![MontyObject::List(vec![
-            MontyObject::Int(1),
-            MontyObject::Int(2),
-        ])])])
+        .run_no_limits(vec![MontyObject::List(vec![
+            MontyObject::List(vec![MontyObject::Int(1).into(), MontyObject::Int(2).into()]).into(),
+        ])])
         .unwrap();
     assert_eq!(result, MontyObject::Int(2));
 }
@@ -262,10 +277,13 @@ fn input_exception_no_arg() {
 fn input_exception_in_list() {
     let ex = MontyRun::new("x[0]".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
     let result = ex
-        .run_no_limits(vec![MontyObject::List(vec![MontyObject::Exception {
-            exc_type: ExcType::KeyError,
-            arg: Some("key".to_string()),
-        }])])
+        .run_no_limits(vec![MontyObject::List(vec![
+            MontyObject::Exception {
+                exc_type: ExcType::KeyError,
+                arg: Some("key".to_string()),
+            }
+            .into(),
+        ])])
         .unwrap();
     assert_eq!(
         result,
@@ -305,10 +323,13 @@ fn invalid_input_repr() {
 fn invalid_input_repr_nested_in_list() {
     let ex = MontyRun::new("x".to_owned(), "test.py", vec!["x".to_owned()]).unwrap();
     // Repr nested inside a list should still be invalid
-    let result = ex.run_no_limits(vec![MontyObject::List(vec![MontyObject::Repr {
-        type_name: "test".to_string(),
-        repr: "nested repr".to_string(),
-    }])]);
+    let result = ex.run_no_limits(vec![MontyObject::List(vec![
+        MontyObject::Repr {
+            type_name: "test".to_string(),
+            repr: "nested repr".to_string(),
+        }
+        .into(),
+    ])]);
     assert!(result.is_err(), "Repr nested in list should be invalid");
 }
 

@@ -82,16 +82,16 @@ result
     let result = loaded.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     // First 10 Fibonacci numbers: 0, 1, 1, 2, 3, 5, 8, 13, 21, 34
     let expected = MontyObject::List(vec![
-        MontyObject::Int(0),
-        MontyObject::Int(1),
-        MontyObject::Int(1),
-        MontyObject::Int(2),
-        MontyObject::Int(3),
-        MontyObject::Int(5),
-        MontyObject::Int(8),
-        MontyObject::Int(13),
-        MontyObject::Int(21),
-        MontyObject::Int(34),
+        MontyObject::Int(0).into(),
+        MontyObject::Int(1).into(),
+        MontyObject::Int(1).into(),
+        MontyObject::Int(2).into(),
+        MontyObject::Int(3).into(),
+        MontyObject::Int(5).into(),
+        MontyObject::Int(8).into(),
+        MontyObject::Int(13).into(),
+        MontyObject::Int(21).into(),
+        MontyObject::Int(34).into(),
     ]);
     assert_eq!(result, expected);
 }

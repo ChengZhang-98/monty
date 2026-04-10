@@ -696,7 +696,7 @@ mod hard_link_tests {
             let names: Vec<String> = entries
                 .iter()
                 .filter_map(|e| {
-                    if let MontyObject::Path(p) = e {
+                    if let MontyObject::Path(p) = &e.value {
                         p.rsplit('/').next().map(ToOwned::to_owned)
                     } else {
                         None
@@ -757,7 +757,7 @@ fn sorted_names_from_list(obj: &MontyObject) -> Vec<String> {
         MontyObject::List(entries) => {
             let mut names: Vec<String> = entries
                 .iter()
-                .filter_map(|entry| match entry {
+                .filter_map(|entry| match &entry.value {
                     MontyObject::Path(path) => path.rsplit('/').next().map(ToOwned::to_owned),
                     _ => None,
                 })

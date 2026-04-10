@@ -58,7 +58,10 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
     } else if let Ok(bytes) = obj.cast::<PyBytes>() {
         Ok(MontyObject::Bytes(bytes.extract()?))
     } else if let Ok(list) = obj.cast::<PyList>() {
-        let items: PyResult<Vec<MontyObject>> = list.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+        let items: PyResult<Vec<_>> = list
+            .iter()
+            .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+            .collect();
         Ok(MontyObject::List(items?))
     } else if let Ok(tuple) = obj.cast::<PyTuple>() {
         // Check for namedtuple BEFORE treating as regular tuple
@@ -81,7 +84,10 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
             // Extract field names as strings
             let field_names: PyResult<Vec<String>> = fields_tuple.iter().map(|f| f.extract::<String>()).collect();
             // Extract values
-            let values: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+            let values: PyResult<Vec<_>> = tuple
+                .iter()
+                .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+                .collect();
             return Ok(MontyObject::NamedTuple {
                 type_name,
                 field_names: field_names?,
@@ -89,7 +95,10 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
             });
         }
         // Regular tuple
-        let items: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+        let items: PyResult<Vec<_>> = tuple
+            .iter()
+            .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+            .collect();
         Ok(MontyObject::Tuple(items?))
     } else if let Ok(dict) = obj.cast::<PyDict>() {
         // in theory we could provide a way of passing the iterator direct to the internal MontyObject construct
@@ -100,10 +109,16 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
                 .collect::<PyResult<Vec<(MontyObject, MontyObject)>>>()?,
         ))
     } else if let Ok(set) = obj.cast::<PySet>() {
-        let items: PyResult<Vec<MontyObject>> = set.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+        let items: PyResult<Vec<_>> = set
+            .iter()
+            .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+            .collect();
         Ok(MontyObject::Set(items?))
     } else if let Ok(frozenset) = obj.cast::<PyFrozenSet>() {
-        let items: PyResult<Vec<MontyObject>> = frozenset.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+        let items: PyResult<Vec<_>> = frozenset
+            .iter()
+            .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+            .collect();
         Ok(MontyObject::FrozenSet(items?))
     } else if obj.is(obj.py().Ellipsis()) {
         Ok(MontyObject::Ellipsis)
@@ -162,13 +177,17 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
         MontyObject::String(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Bytes(b) => Ok(PyBytes::new(py, b).into_any().unbind()),
         MontyObject::List(items) => {
-            let py_items: PyResult<Vec<Py<PyAny>>> =
-                items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            let py_items: PyResult<Vec<Py<PyAny>>> = items
+                .iter()
+                .map(|item| monty_to_py(py, &item.value, dc_registry))
+                .collect();
             Ok(PyList::new(py, py_items?)?.into_any().unbind())
         }
         MontyObject::Tuple(items) => {
-            let py_items: PyResult<Vec<Py<PyAny>>> =
-                items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            let py_items: PyResult<Vec<Py<PyAny>>> = items
+                .iter()
+                .map(|item| monty_to_py(py, &item.value, dc_registry))
+                .collect();
             Ok(PyTuple::new(py, py_items?)?.into_any().unbind())
         }
         // NamedTuple - create a proper Python namedtuple using collections.namedtuple
@@ -200,28 +219,35 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
             // Convert values and instantiate using _make() which accepts an iterable
             // note `_make` might start with an underscore, but it's a public documented method
             // https://docs.python.org/3/library/collections.html#collections.somenamedtuple._make
-            let py_values: PyResult<Vec<Py<PyAny>>> =
-                values.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            let py_values: PyResult<Vec<Py<PyAny>>> = values
+                .iter()
+                .map(|item| monty_to_py(py, &item.value, dc_registry))
+                .collect();
             let instance = nt_type.call_method1("_make", (py_values?,))?;
             Ok(instance.into_any().unbind())
         }
         MontyObject::Dict(map) => {
             let dict = PyDict::new(py);
             for (k, v) in map {
-                dict.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
+                dict.set_item(
+                    monty_to_py(py, &k.value, dc_registry)?,
+                    monty_to_py(py, &v.value, dc_registry)?,
+                )?;
             }
             Ok(dict.into_any().unbind())
         }
         MontyObject::Set(items) => {
             let set = PySet::empty(py)?;
             for item in items {
-                set.add(monty_to_py(py, item, dc_registry)?)?;
+                set.add(monty_to_py(py, &item.value, dc_registry)?)?;
             }
             Ok(set.into_any().unbind())
         }
         MontyObject::FrozenSet(items) => {
-            let py_items: PyResult<Vec<Py<PyAny>>> =
-                items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            let py_items: PyResult<Vec<Py<PyAny>>> = items
+                .iter()
+                .map(|item| monty_to_py(py, &item.value, dc_registry))
+                .collect();
             Ok(PyFrozenSet::new(py, &py_items?)?.into_any().unbind())
         }
         // Return the exception instance as a value (not raised)
