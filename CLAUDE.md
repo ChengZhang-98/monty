@@ -15,6 +15,13 @@ Project goals:
 - **Cross-platform**: Runs on Linux, macOS, and Windows (and any other OS that can run Rust)
 - Targets the latest stable version of Python, currently Python 3.14
 
+## Branching Strategy
+
+This repository is a fork of [pydantic/monty](https://github.com/pydantic/monty). Two key branches:
+
+- **`main`** — Tracks upstream `pydantic/monty` main. Used only for syncing with the original repo. Do NOT commit custom features here.
+- **`tiny-beaver-ext`** — The working branch for all custom extensions and new features. Accepts merges from both upstream (via `main`) and local development.
+
 ## Cross-Platform Requirements
 
 Monty must work identically on Linux, macOS, and Windows. Within the Monty sandbox,
