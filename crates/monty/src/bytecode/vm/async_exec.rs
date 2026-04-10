@@ -6,7 +6,7 @@
 //! - Task completion and failure handling
 //! - External future resolution
 
-use std::mem;
+use std::{iter, mem};
 
 use super::{AwaitResult, CallFrame, VM};
 use crate::{
@@ -18,6 +18,7 @@ use crate::{
     exception_private::{ExcType, RunError, SimpleException},
     heap::{HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::FunctionId,
+    metadata::MetadataId,
     resource::ResourceTracker,
     types::{List, PyTrait},
     value::Value,
@@ -239,7 +240,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // Extend the stack with the coroutine's pre-bound locals
         let stack_base = self.stack.len();
+        let ns_len = namespace_values.len();
         self.stack.extend(namespace_values);
+        self.meta_stack.extend(iter::repeat_n(MetadataId::DEFAULT, ns_len));
 
         // Push frame to execute the coroutine
         self.push_frame(CallFrame::new_function(
@@ -531,6 +534,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         task.frames = frames;
         task.stack = mem::take(&mut self.stack);
         task.exception_stack = mem::take(&mut self.exception_stack);
+        task.meta_stack = mem::take(&mut self.meta_stack);
+        task.meta_exception_stack = mem::take(&mut self.meta_exception_stack);
         task.instruction_ip = self.instruction_ip;
     }
 
@@ -548,6 +553,8 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let frames = mem::take(&mut task.frames);
         let stack = mem::take(&mut task.stack);
         let exception_stack = mem::take(&mut task.exception_stack);
+        let meta_stack = mem::take(&mut task.meta_stack);
+        let meta_exception_stack = mem::take(&mut task.meta_exception_stack);
         let instruction_ip = task.instruction_ip;
         let coroutine_id = task.coroutine_id;
 
@@ -560,6 +567,13 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
             // Task has existing context - restore it
             self.stack = stack;
             self.exception_stack = exception_stack;
+            // Ensure metadata vecs match value vec lengths (handles old snapshots via serde default)
+            let mut meta_stack = meta_stack;
+            meta_stack.resize(self.stack.len(), MetadataId::DEFAULT);
+            self.meta_stack = meta_stack;
+            let mut meta_exception_stack = meta_exception_stack;
+            meta_exception_stack.resize(self.exception_stack.len(), MetadataId::DEFAULT);
+            self.meta_exception_stack = meta_exception_stack;
             self.instruction_ip = instruction_ip;
 
             // Reconstruct CallFrames from serialized form
@@ -641,7 +655,9 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         self.heap.tracker_mut().on_allocate(|| size)?;
 
         let stack_base = self.stack.len();
+        let ns_len = namespace_values.len();
         self.stack.extend(namespace_values);
+        self.meta_stack.extend(iter::repeat_n(MetadataId::DEFAULT, ns_len));
 
         self.push_frame(CallFrame::new_function(
             &func.code,
@@ -724,6 +740,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                             if waiter_context_in_vm {
                                 // Waiter's frames are in the VM - push directly onto VM stack
                                 self.stack.push(Value::Ref(list_id));
+                                self.meta_stack.push(MetadataId::DEFAULT);
                                 // Mark as ready but don't add to ready_queue
                                 self.scheduler.get_task_mut(waiter_id).state = TaskState::Ready;
                             } else {

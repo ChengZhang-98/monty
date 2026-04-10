@@ -1,4 +1,4 @@
-use std::{fmt::Write, mem};
+use std::{fmt::Write, iter, mem};
 
 use ahash::AHashSet;
 use smallvec::SmallVec;
@@ -11,6 +11,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
+    metadata::MetadataId,
     resource::{ResourceError, ResourceTracker},
     sorting::{apply_permutation, sort_indices},
     types::Type,
@@ -54,13 +55,17 @@ use crate::{
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct List {
     items: Vec<Value>,
+    /// Parallel metadata for each element — `item_metadata[i]` is the metadata for `items[i]`.
+    /// Maintains the invariant `item_metadata.len() == items.len()` at all times.
+    #[serde(default)]
+    item_metadata: Vec<MetadataId>,
     /// True if any item in the list is a `Value::Ref`. Used to skip iteration
     /// in `collect_child_ids` and `py_dec_ref_ids` when no refs are present.
     contains_refs: bool,
 }
 
 impl List {
-    /// Creates a new list from a vector of values.
+    /// Creates a new list from a vector of values with default metadata.
     ///
     /// Automatically computes the `contains_refs` flag by checking if any value
     /// is a `Value::Ref`.
@@ -70,10 +75,37 @@ impl List {
     #[must_use]
     pub fn new(vec: Vec<Value>) -> Self {
         let contains_refs = vec.iter().any(|v| matches!(v, Value::Ref(_)));
+        let item_metadata = vec![MetadataId::DEFAULT; vec.len()];
         Self {
             items: vec,
+            item_metadata,
             contains_refs,
         }
+    }
+
+    /// Creates a new list from values and their corresponding metadata.
+    ///
+    /// # Panics
+    /// Panics in debug mode if `vec.len() != metadata.len()`.
+    #[must_use]
+    pub fn new_with_metadata(vec: Vec<Value>, metadata: Vec<MetadataId>) -> Self {
+        debug_assert_eq!(vec.len(), metadata.len(), "items/metadata length mismatch");
+        let contains_refs = vec.iter().any(|v| matches!(v, Value::Ref(_)));
+        Self {
+            items: vec,
+            item_metadata: metadata,
+            contains_refs,
+        }
+    }
+
+    /// Returns the metadata for element at the given index.
+    pub fn item_meta(&self, index: usize) -> MetadataId {
+        self.item_metadata.get(index).copied().unwrap_or_default()
+    }
+
+    /// Returns the metadata slice for all elements.
+    pub fn item_metadata_slice(&self) -> &[MetadataId] {
+        &self.item_metadata
     }
 
     /// Returns a reference to the underlying vector.
@@ -91,6 +123,23 @@ impl List {
     /// vector mutations. Prefer using `append()` or `insert()` instead.
     pub fn as_vec_mut(&mut self) -> &mut Vec<Value> {
         &mut self.items
+    }
+
+    /// Extends the list with items and their corresponding metadata.
+    ///
+    /// Maintains the `items.len() == item_metadata.len()` invariant.
+    /// Does NOT update `contains_refs` — caller must do that separately.
+    ///
+    /// # Panics
+    /// Panics in debug mode if `items.len() != metadata.len()`.
+    pub fn extend_with_meta(&mut self, items: Vec<Value>, metadata: Vec<MetadataId>) {
+        debug_assert_eq!(
+            items.len(),
+            metadata.len(),
+            "items/metadata length mismatch in extend_with_meta"
+        );
+        self.items.extend(items);
+        self.item_metadata.extend(metadata);
     }
 
     /// Returns the number of elements in the list.
@@ -125,6 +174,16 @@ impl<'h> HeapRead<'h, List> {
     /// is NOT incremented here - the caller is responsible for ensuring the refcount
     /// was already incremented (e.g., via `clone_with_heap` or `evaluate_use`).
     pub fn append(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>, item: Value) -> RunResult<()> {
+        self.append_with_meta(vm, item, MetadataId::DEFAULT)
+    }
+
+    /// Appends an element with metadata to the end of the list.
+    pub fn append_with_meta(
+        &mut self,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+        item: Value,
+        meta: MetadataId,
+    ) -> RunResult<()> {
         // Check memory limit before growing the internal Vec
         vm.heap.track_growth(VALUE_SIZE)?;
         // Track if we're adding a reference and mark potential cycle
@@ -133,7 +192,9 @@ impl<'h> HeapRead<'h, List> {
             vm.heap.mark_potential_cycle();
         }
         // Ownership transfer - refcount was already handled by caller
-        self.get_mut(vm.heap).items.push(item);
+        let this = self.get_mut(vm.heap);
+        this.items.push(item);
+        this.item_metadata.push(meta);
         Ok(())
     }
 
@@ -159,8 +220,10 @@ impl<'h> HeapRead<'h, List> {
         let this = self.get_mut(vm.heap);
         if index >= this.items.len() {
             this.items.push(item);
+            this.item_metadata.push(MetadataId::DEFAULT);
         } else {
             this.items.insert(index, item);
+            this.item_metadata.insert(index, MetadataId::DEFAULT);
         }
         Ok(())
     }
@@ -196,8 +259,11 @@ impl<'h> HeapRead<'h, List> {
             .indices(self.get(vm.heap).items.len())
             .map_err(|()| ExcType::value_error_slice_step_zero())?;
 
-        let items = get_slice_items(&self.get(vm.heap).items, start, stop, step, vm.heap)?;
-        let heap_id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+        let this = self.get(vm.heap);
+        let items = get_slice_items(&this.items, start, stop, step, vm.heap)?;
+        // Slice metadata in the same order as items
+        let meta = get_slice_metadata(&this.item_metadata, start, stop, step);
+        let heap_id = vm.heap.allocate(HeapData::List(List::new_with_metadata(items, meta)))?;
         Ok(Value::Ref(heap_id))
     }
 
@@ -342,8 +408,10 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
 
     fn py_add(&self, other: &Self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> Result<Option<Value>, ResourceError> {
         let mut items = self.clone_all_items(vm);
+        let mut meta = self.get(vm.heap).item_metadata.clone();
         items.extend(other.clone_all_items(vm));
-        let id = vm.heap.allocate(HeapData::List(List::new(items)))?;
+        meta.extend_from_slice(&other.get(vm.heap).item_metadata);
+        let id = vm.heap.allocate(HeapData::List(List::new_with_metadata(items, meta)))?;
         Ok(Some(Value::Ref(id)))
     }
 
@@ -360,12 +428,15 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
         if Some(*other_id) == self_id {
             // Self-extend: clone our own items with proper refcounting
             let items = self.clone_all_items(vm);
+            let meta_clone = self.get(vm.heap).item_metadata.clone();
             // Check memory limit before extending
             vm.heap.track_growth(items.len() * VALUE_SIZE)?;
             if self.get(vm.heap).contains_refs {
                 vm.heap.mark_potential_cycle();
             }
-            self.get_mut(vm.heap).items.extend(items);
+            let this = self.get_mut(vm.heap);
+            this.items.extend(items);
+            this.item_metadata.extend_from_slice(&meta_clone);
         } else {
             // Pre-check memory limit before extending from the other list.
             // Read source list via HeapRead, clone items into a temporary Vec
@@ -376,9 +447,12 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
             let source_len = source_list.get(vm.heap).len();
             vm.heap.track_growth(source_len * VALUE_SIZE)?;
             let source_items = source_list.clone_all_items(vm);
+            let source_meta = source_list.get(vm.heap).item_metadata.clone();
             // Check if new items contain refs
             let has_new_refs = source_items.iter().any(|v| matches!(v, Value::Ref(_)));
-            self.get_mut(vm.heap).items.extend(source_items);
+            let this = self.get_mut(vm.heap);
+            this.items.extend(source_items);
+            this.item_metadata.extend_from_slice(&source_meta);
             if self.get(vm.heap).contains_refs || has_new_refs {
                 if has_new_refs {
                     self.get_mut(vm.heap).contains_refs = true;
@@ -414,7 +488,7 @@ impl<'h> PyTrait<'h> for HeapRead<'h, List> {
 
 impl HeapItem for List {
     fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.items.len() * VALUE_SIZE
+        mem::size_of::<Self>() + self.items.len() * VALUE_SIZE + self.item_metadata.len() * mem::size_of::<MetadataId>()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
@@ -471,7 +545,9 @@ fn call_list_method<'h>(
         StaticStrings::Count => list_count(list, args, vm),
         StaticStrings::Reverse => {
             args.check_zero_args("list.reverse", heap)?;
-            list.get_mut(vm.heap).items.reverse();
+            let this = list.get_mut(vm.heap);
+            this.items.reverse();
+            this.item_metadata.reverse();
             Ok(Value::None)
         }
         // Note: list.sort is handled by py_call_attr which intercepts it before reaching here
@@ -547,9 +623,11 @@ fn list_pop<'h>(
         return Err(ExcType::index_error_pop_out_of_range());
     }
 
-    // Remove and return the item
+    // Remove and return the item (metadata also removed to maintain invariant)
     let idx = usize::try_from(normalized).expect("index validated non-negative");
-    Ok(list.get_mut(vm.heap).items.remove(idx))
+    let this = list.get_mut(vm.heap);
+    this.item_metadata.remove(idx);
+    Ok(this.items.remove(idx))
 }
 
 /// Implements Python's `list.remove(value)` method.
@@ -579,7 +657,9 @@ fn list_remove<'h>(
     match found_idx {
         Some(idx) => {
             // Remove the element and drop its refcount
-            let removed = list.get_mut(vm.heap).items.remove(idx);
+            let this = list.get_mut(vm.heap);
+            this.item_metadata.remove(idx);
+            let removed = this.items.remove(idx);
             removed.drop_with_heap(vm.heap);
             Ok(Value::None)
         }
@@ -591,7 +671,9 @@ fn list_remove<'h>(
 ///
 /// Removes all items from the list.
 fn list_clear<'h>(list: &mut HeapRead<'h, List>, vm: &mut VM<'h, '_, impl ResourceTracker>) {
-    mem::take(&mut list.get_mut(vm.heap).items).drop_with_heap(vm);
+    let this = list.get_mut(vm.heap);
+    this.item_metadata.clear();
+    mem::take(&mut this.items).drop_with_heap(vm);
     // Note: contains_refs stays true even if all refs removed, per conservative GC strategy
 }
 
@@ -600,7 +682,8 @@ fn list_clear<'h>(list: &mut HeapRead<'h, List>, vm: &mut VM<'h, '_, impl Resour
 /// Returns a shallow copy of the list.
 fn list_copy(list: &List, heap: &Heap<impl ResourceTracker>) -> Result<Value, ResourceError> {
     let items: Vec<Value> = list.items.iter().map(|v| v.clone_with_heap(heap)).collect();
-    let heap_id = heap.allocate(HeapData::List(List::new(items)))?;
+    let meta = list.item_metadata.clone();
+    let heap_id = heap.allocate(HeapData::List(List::new_with_metadata(items, meta)))?;
     Ok(Value::Ref(heap_id))
 }
 
@@ -622,7 +705,12 @@ fn list_extend<'h>(
         list.get_mut(vm.heap).set_contains_refs();
         vm.heap.mark_potential_cycle();
     }
+    let new_meta_count = items.len();
     list.get_mut(vm.heap).as_vec_mut().extend(items);
+    // Items from MontyIter don't carry metadata, so extend with DEFAULT
+    list.get_mut(vm.heap)
+        .item_metadata
+        .extend(iter::repeat_n(MetadataId::DEFAULT, new_meta_count));
 
     Ok(Value::None)
 }
@@ -761,8 +849,11 @@ fn do_list_sort<'h>(
 
     sort_indices(&mut indices, compare_values, reverse, vm)?;
 
-    // 3. Rearrange items in-place according to the sorted permutation
-    apply_permutation(&mut list.get_mut(vm.heap).items, &mut indices);
+    // 3. Rearrange items and metadata in-place according to the sorted permutation
+    let mut indices_clone = indices.clone();
+    let this = list.get_mut(vm.heap);
+    apply_permutation(&mut this.items, &mut indices);
+    apply_permutation(&mut this.item_metadata, &mut indices_clone);
     Ok(())
 }
 
@@ -862,6 +953,40 @@ pub(crate) fn get_slice_items(
     }
 
     Ok(result)
+}
+
+/// Slices metadata in the same order as [`get_slice_items`] slices values.
+///
+/// This is a simpler version that doesn't need heap access (no refcounting for MetadataId).
+fn get_slice_metadata(metadata: &[MetadataId], start: usize, stop: usize, step: i64) -> Vec<MetadataId> {
+    let mut result = Vec::new();
+
+    if let Ok(step_usize) = usize::try_from(step) {
+        let mut i = start;
+        while i < stop && i < metadata.len() {
+            result.push(metadata[i]);
+            i += step_usize;
+        }
+    } else {
+        let step_abs = usize::try_from(-step).expect("step is negative so -step is positive");
+        let step_abs_i64 = i64::try_from(step_abs).expect("step magnitude fits in i64");
+        let mut i = i64::try_from(start).expect("start index fits in i64");
+        let stop_i64 = if stop > metadata.len() {
+            -1
+        } else {
+            i64::try_from(stop).expect("stop bounded by metadata.len() fits in i64")
+        };
+
+        while let Ok(i_usize) = usize::try_from(i) {
+            if i_usize >= metadata.len() || i <= stop_i64 {
+                break;
+            }
+            result.push(metadata[i_usize]);
+            i -= step_abs_i64;
+        }
+    }
+
+    result
 }
 
 #[cfg(test)]

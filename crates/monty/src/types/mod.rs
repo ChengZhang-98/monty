@@ -50,7 +50,7 @@ pub(crate) use slice::Slice;
 pub(crate) use str::Str;
 pub(crate) use timedelta::TimeDelta;
 pub(crate) use timezone::TimeZone;
-pub(crate) use tuple::{Tuple, allocate_tuple};
+pub(crate) use tuple::{Tuple, allocate_tuple, allocate_tuple_with_metadata};
 pub(crate) use r#type::Type;
 
 use crate::{

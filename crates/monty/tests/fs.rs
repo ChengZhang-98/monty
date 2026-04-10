@@ -140,7 +140,7 @@ fn sorted_names(obj: &MontyObject) -> Vec<String> {
         MontyObject::List(items) => {
             let mut names: Vec<String> = items
                 .iter()
-                .map(|item| match item {
+                .map(|item| match &item.value {
                     MontyObject::Path(p) => p.rsplit('/').next().unwrap().to_owned(),
                     other => panic!("expected Path in iterdir result, got {other:?}"),
                 })
@@ -388,7 +388,7 @@ fn rw_stat_file() {
     // stat returns a NamedTuple; check st_size at index 6
     match &stat {
         MontyObject::NamedTuple { values, .. } => {
-            assert_eq!(values[6], MontyObject::Int(12), "st_size should be 12");
+            assert_eq!(values[6].value, MontyObject::Int(12), "st_size should be 12");
         }
         other => panic!("expected NamedTuple from stat, got {other:?}"),
     }
@@ -403,7 +403,7 @@ fn rw_stat_dir() {
     match &stat {
         MontyObject::NamedTuple { values, .. } => {
             // st_mode should have directory type bits (0o040_000)
-            if let MontyObject::Int(mode) = values[0] {
+            if let MontyObject::Int(mode) = values[0].value {
                 assert_eq!(mode & 0o170_000, 0o040_000, "should be directory type");
             } else {
                 panic!("st_mode should be Int");
@@ -969,7 +969,7 @@ fn ovl_mem_stat_overlay_file() {
     let stat = call_ok(&mut mt, OsFunction::Stat, "/mnt/sized.txt");
     match &stat {
         MontyObject::NamedTuple { values, .. } => {
-            assert_eq!(values[6], MontyObject::Int(5), "st_size should be 5");
+            assert_eq!(values[6].value, MontyObject::Int(5), "st_size should be 5");
         }
         other => panic!("expected NamedTuple, got {other:?}"),
     }

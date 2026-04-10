@@ -27,6 +27,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
+    metadata::MetadataId,
     resource::{ResourceError, ResourceTracker},
     types::{
         Type,
@@ -59,6 +60,9 @@ pub(crate) type TupleVec = SmallVec<[Value; TUPLE_INLINE_CAPACITY]>;
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Tuple {
     items: TupleVec,
+    /// Parallel metadata for each element — `item_metadata[i]` is the metadata for `items[i]`.
+    #[serde(default)]
+    item_metadata: SmallVec<[MetadataId; TUPLE_INLINE_CAPACITY]>,
     /// True if any item in the tuple is a `Value::Ref`. Set at creation time
     /// since tuples are immutable.
     contains_refs: bool,
@@ -78,7 +82,37 @@ impl Tuple {
     #[must_use]
     fn new(items: TupleVec) -> Self {
         let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
-        Self { items, contains_refs }
+        let item_metadata = smallvec::smallvec![MetadataId::DEFAULT; items.len()];
+        Self {
+            items,
+            item_metadata,
+            contains_refs,
+        }
+    }
+
+    /// Creates a new tuple from values and their corresponding metadata.
+    ///
+    /// # Panics
+    /// Panics in debug mode if `items.len() != metadata.len()`.
+    #[must_use]
+    pub fn new_with_metadata(items: TupleVec, metadata: SmallVec<[MetadataId; TUPLE_INLINE_CAPACITY]>) -> Self {
+        debug_assert_eq!(items.len(), metadata.len(), "items/metadata length mismatch");
+        let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
+        Self {
+            items,
+            item_metadata: metadata,
+            contains_refs,
+        }
+    }
+
+    /// Returns the metadata for element at the given index.
+    pub fn item_meta(&self, index: usize) -> MetadataId {
+        self.item_metadata.get(index).copied().unwrap_or_default()
+    }
+
+    /// Returns the metadata slice for all elements.
+    pub fn item_metadata_slice(&self) -> &[MetadataId] {
+        &self.item_metadata
     }
 
     /// Returns a reference to the underlying SmallVec.
@@ -150,6 +184,23 @@ pub fn allocate_tuple(
     } else {
         // Allocate a new tuple (SmallVec will inline if ≤3 elements)
         let heap_id = heap.allocate(HeapData::Tuple(Tuple::new(items)))?;
+        Ok(Value::Ref(heap_id))
+    }
+}
+
+/// Allocates a tuple with per-element metadata.
+///
+/// # Panics
+/// Panics in debug mode if `items.len() != metadata.len()`.
+pub fn allocate_tuple_with_metadata(
+    items: SmallVec<[Value; TUPLE_INLINE_CAPACITY]>,
+    metadata: SmallVec<[MetadataId; TUPLE_INLINE_CAPACITY]>,
+    heap: &Heap<impl ResourceTracker>,
+) -> Result<Value, ResourceError> {
+    if items.is_empty() {
+        Ok(heap.get_empty_tuple())
+    } else {
+        let heap_id = heap.allocate(HeapData::Tuple(Tuple::new_with_metadata(items, metadata)))?;
         Ok(Value::Ref(heap_id))
     }
 }
@@ -307,7 +358,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
 
 impl HeapItem for Tuple {
     fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Self>() + self.items.len() * mem::size_of::<Value>()
+        mem::size_of::<Self>()
+            + self.items.len() * mem::size_of::<Value>()
+            + self.item_metadata.len() * mem::size_of::<MetadataId>()
     }
 
     /// Pushes all heap IDs contained in this tuple onto the stack.

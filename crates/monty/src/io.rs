@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::exception_public::MontyException;
+use crate::{exception_public::MontyException, object::MontyObject};
 
 /// Output handler for the `print()` builtin function.
 ///
@@ -78,6 +78,41 @@ impl PrintWriter<'_> {
             Self::Callback(cb) => cb.stdout_push(end),
         }
     }
+
+    /// Returns `true` if this writer wants structured output via
+    /// [`stdout_write_structured`](Self::stdout_write_structured) instead of
+    /// per-argument string fragments.
+    ///
+    /// When this returns `true`, `builtin_print` will convert each `Value` to a
+    /// [`MontyObject`] and deliver all positional arguments in a single
+    /// `stdout_write_structured` call, rather than calling `stdout_write` and
+    /// `stdout_push` multiple times.
+    #[must_use]
+    pub fn wants_structured(&self) -> bool {
+        match self {
+            Self::Callback(cb) => cb.wants_structured(),
+            _ => false,
+        }
+    }
+
+    /// Called once per `print()` invocation with all positional arguments as
+    /// structured [`MontyObject`] values, plus the resolved `sep` and `end`.
+    ///
+    /// JSON-serializable types (int, str, float, bool, None, list, dict, tuple)
+    /// are passed as their native `MontyObject` variants. Non-serializable types
+    /// (functions, iterators, etc.) are represented as `MontyObject::Repr` with
+    /// a type name and their `repr()` string.
+    pub fn stdout_write_structured(
+        &mut self,
+        objects: Vec<MontyObject>,
+        sep: &str,
+        end: &str,
+    ) -> Result<(), MontyException> {
+        match self {
+            Self::Callback(cb) => cb.stdout_write_structured(objects, sep, end),
+            _ => unreachable!("stdout_write_structured called on non-structured writer"),
+        }
+    }
 }
 
 /// Trait for custom output handling from the `print()` builtin function.
@@ -103,4 +138,38 @@ pub trait PrintWriterCallback {
     /// # Arguments
     /// * `end` - The character to print after the formatted output.
     fn stdout_push(&mut self, end: char) -> Result<(), MontyException>;
+
+    /// Whether this callback wants structured output.
+    ///
+    /// When `true`, `builtin_print` calls [`stdout_write_structured`](Self::stdout_write_structured)
+    /// once per `print()` invocation instead of calling `stdout_write`/`stdout_push` per argument.
+    /// Defaults to `false` for backwards compatibility.
+    fn wants_structured(&self) -> bool {
+        false
+    }
+
+    /// Receives all positional arguments of a single `print()` call as structured
+    /// [`MontyObject`] values, along with the resolved `sep` and `end` strings.
+    ///
+    /// Only called when [`wants_structured`](Self::wants_structured) returns `true`.
+    /// The default implementation falls back to `stdout_write`/`stdout_push`,
+    /// formatting each object via its string representation.
+    fn stdout_write_structured(
+        &mut self,
+        objects: Vec<MontyObject>,
+        sep: &str,
+        end: &str,
+    ) -> Result<(), MontyException> {
+        let mut first = true;
+        for obj in &objects {
+            if first {
+                first = false;
+            } else {
+                self.stdout_write(Cow::Borrowed(sep))?;
+            }
+            self.stdout_write(Cow::Owned(obj.to_string()))?;
+        }
+        self.stdout_write(Cow::Borrowed(end))?;
+        Ok(())
+    }
 }

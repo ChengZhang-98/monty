@@ -12,13 +12,14 @@ use ruff_python_parser::{InterpolatedStringErrorType, LexicalErrorType, ParseErr
 use serde::de::DeserializeOwned;
 
 use crate::{
-    ExcType, MontyException,
+    AnnotatedObject, ExcType, MontyException,
     asyncio::CallId,
     bytecode::{VM, VMSnapshot},
     exception_private::RunError,
     heap::{DropWithHeap, Heap, HeapReader},
     intern::{InternerBuilder, Interns},
     io::PrintWriter,
+    metadata::{MetadataId, MetadataStore},
     namespace::NamespaceId,
     object::MontyObject,
     os::OsFunction,
@@ -55,6 +56,18 @@ pub struct MontyRepl<T: ResourceTracker> {
     /// executions these are the only VM values that persist — stack and frames
     /// are transient.
     globals: Vec<Value>,
+    /// Parallel metadata for globals — one [`MetadataId`] per entry in `globals`.
+    ///
+    /// Persisted across snippets so metadata attached to inputs or computed by
+    /// prior snippets survives into subsequent ones.
+    #[serde(default)]
+    meta_globals: Vec<MetadataId>,
+    /// Persistent metadata interning store across snippets.
+    ///
+    /// Label strings and metadata records are interned here so that `MetadataId`
+    /// values in `meta_globals` remain valid across snippet executions.
+    #[serde(default)]
+    metadata_store: MetadataStore,
 }
 
 impl<T: ResourceTracker> MontyRepl<T> {
@@ -73,6 +86,8 @@ impl<T: ResourceTracker> MontyRepl<T> {
             interns: Interns::new(InternerBuilder::default(), Vec::new()),
             heap,
             globals: Vec::new(),
+            meta_globals: Vec::new(),
+            metadata_store: MetadataStore::new(),
         }
     }
 
@@ -112,14 +127,14 @@ impl<T: ResourceTracker> MontyRepl<T> {
     pub fn feed_start(
         self,
         code: &str,
-        inputs: Vec<(String, MontyObject)>,
+        inputs: Vec<(String, AnnotatedObject)>,
         mut print: PrintWriter<'_>,
     ) -> Result<ReplProgress<T>, Box<ReplStartError<T>>> {
         let mut this = self;
         if code.is_empty() {
             return Ok(ReplProgress::Complete {
                 repl: this,
-                value: MontyObject::None,
+                value: AnnotatedObject::from(MontyObject::None),
             });
         }
 
@@ -140,11 +155,21 @@ impl<T: ResourceTracker> MontyRepl<T> {
         this.ensure_globals_size(executor.namespace_size);
 
         match HeapReader::with(&mut this.heap, |heap| {
-            let mut vm = VM::new(mem::take(&mut this.globals), heap, &executor.interns, print.reborrow());
+            let mut vm = VM::new_with_metadata(
+                mem::take(&mut this.globals),
+                mem::take(&mut this.meta_globals),
+                mem::take(&mut this.metadata_store),
+                heap,
+                &executor.interns,
+                print.reborrow(),
+            );
 
             // Inject inputs with VM alive
             if let Err(error) = inject_inputs_into_vm(&executor, input_values, &mut vm) {
-                this.globals = vm.take_globals();
+                let (globals, meta_globals, metadata_store) = vm.take_globals_with_meta();
+                this.globals = globals;
+                this.meta_globals = meta_globals;
+                this.metadata_store = metadata_store;
                 vm.cleanup();
                 return Err(error);
             }
@@ -156,7 +181,10 @@ impl<T: ResourceTracker> MontyRepl<T> {
             let vm_state = if converted.needs_snapshot() {
                 Some(vm.snapshot())
             } else {
-                this.globals = vm.take_globals();
+                let (globals, meta_globals, metadata_store) = vm.take_globals_with_meta();
+                this.globals = globals;
+                this.meta_globals = meta_globals;
+                this.metadata_store = metadata_store;
                 vm.cleanup();
                 None
             };
@@ -180,7 +208,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     pub fn feed_run(
         &mut self,
         code: &str,
-        inputs: Vec<(String, MontyObject)>,
+        inputs: Vec<(String, AnnotatedObject)>,
         mut print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
         if code.is_empty() {
@@ -201,18 +229,31 @@ impl<T: ResourceTracker> MontyRepl<T> {
         self.ensure_globals_size(executor.namespace_size);
 
         let result = HeapReader::with(&mut self.heap, |heap| {
-            let mut vm = VM::new(mem::take(&mut self.globals), heap, &executor.interns, print.reborrow());
+            let mut vm = VM::new_with_metadata(
+                mem::take(&mut self.globals),
+                mem::take(&mut self.meta_globals),
+                mem::take(&mut self.metadata_store),
+                heap,
+                &executor.interns,
+                print.reborrow(),
+            );
 
             if let Err(e) = inject_inputs_into_vm(&executor, input_values, &mut vm) {
-                self.globals = vm.take_globals();
+                let (globals, meta_globals, metadata_store) = vm.take_globals_with_meta();
+                self.globals = globals;
+                self.meta_globals = meta_globals;
+                self.metadata_store = metadata_store;
                 vm.cleanup();
                 return Err(e);
             }
 
             let result = executor.run_to_completion(&mut vm);
 
-            // Reclaim globals before cleanup.
-            self.globals = vm.take_globals();
+            // Reclaim globals and metadata before cleanup.
+            let (globals, meta_globals, metadata_store) = vm.take_globals_with_meta();
+            self.globals = globals;
+            self.meta_globals = meta_globals;
+            self.metadata_store = metadata_store;
             vm.cleanup();
             Ok(result)
         })?;
@@ -239,6 +280,7 @@ impl<T: ResourceTracker> MontyRepl<T> {
     fn ensure_globals_size(&mut self, size: usize) {
         if self.globals.len() < size {
             self.globals.resize_with(size, || Value::Undefined);
+            self.meta_globals.resize(size, MetadataId::DEFAULT);
         }
     }
 
@@ -308,8 +350,8 @@ pub enum ReplProgress<T: ResourceTracker> {
     Complete {
         /// Updated REPL session state to continue feeding snippets.
         repl: MontyRepl<T>,
-        /// Final result produced by the snippet.
-        value: MontyObject,
+        /// Final result produced by the snippet, with propagated metadata.
+        value: AnnotatedObject,
     },
 }
 
@@ -355,9 +397,9 @@ impl<T: ResourceTracker> ReplProgress<T> {
         }
     }
 
-    /// Consumes the progress and returns the completed REPL and value.
+    /// Consumes the progress and returns the completed REPL and annotated value.
     #[must_use]
-    pub fn into_complete(self) -> Option<(MontyRepl<T>, MontyObject)> {
+    pub fn into_complete(self) -> Option<(MontyRepl<T>, AnnotatedObject)> {
         match self {
             Self::Complete { repl, value } => Some((repl, value)),
             _ => None,
@@ -564,7 +606,12 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
                     let value = match obj.to_value(&mut vm) {
                         Ok(v) => v,
                         Err(e) => {
-                            repl.globals = vm.take_globals();
+                            {
+                                let (g, mg, ms) = vm.take_globals_with_meta();
+                                repl.globals = g;
+                                repl.meta_globals = mg;
+                                repl.metadata_store = ms;
+                            }
                             vm.cleanup();
                             return Err(MontyException::runtime_error(format!(
                                 "invalid name lookup result: {e}"
@@ -599,7 +646,12 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
             let vm_state = if converted.needs_snapshot() {
                 Some(vm.snapshot())
             } else {
-                repl.globals = vm.take_globals();
+                {
+                    let (g, mg, ms) = vm.take_globals_with_meta();
+                    repl.globals = g;
+                    repl.meta_globals = mg;
+                    repl.metadata_store = ms;
+                }
                 vm.cleanup();
                 None
             };
@@ -642,6 +694,8 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
     pub fn into_repl(self) -> MontyRepl<T> {
         let Self { mut repl, vm_state, .. } = self;
         repl.globals = vm_state.globals;
+        repl.meta_globals = vm_state.meta_globals;
+        repl.metadata_store = vm_state.metadata_store;
         repl
     }
 
@@ -686,7 +740,12 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
             );
 
             if let Some(call_id) = invalid_call_id {
-                repl.globals = vm.take_globals();
+                {
+                    let (g, mg, ms) = vm.take_globals_with_meta();
+                    repl.globals = g;
+                    repl.meta_globals = mg;
+                    repl.metadata_store = ms;
+                }
                 vm.cleanup();
                 return Err(MontyException::runtime_error(format!(
                     "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
@@ -695,9 +754,14 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
 
             for (call_id, ext_result) in results {
                 match ext_result {
-                    ExtFunctionResult::Return(obj) => {
+                    ExtFunctionResult::Return(obj, _meta) => {
                         if let Err(e) = vm.resolve_future(call_id, obj) {
-                            repl.globals = vm.take_globals();
+                            {
+                                let (g, mg, ms) = vm.take_globals_with_meta();
+                                repl.globals = g;
+                                repl.meta_globals = mg;
+                                repl.metadata_store = ms;
+                            }
                             vm.cleanup();
                             return Err(MontyException::runtime_error(format!(
                                 "Invalid return type for call {call_id}: {e}"
@@ -713,7 +777,12 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
             }
 
             if let Some(error) = vm.take_failed_task_error() {
-                repl.globals = vm.take_globals();
+                {
+                    let (g, mg, ms) = vm.take_globals_with_meta();
+                    repl.globals = g;
+                    repl.meta_globals = mg;
+                    repl.metadata_store = ms;
+                }
                 vm.cleanup();
                 return Err(error.into_python_exception(&executor.interns, &executor.code));
             }
@@ -723,7 +792,12 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
             let loaded_task = match vm.load_ready_task_if_needed() {
                 Ok(loaded) => loaded,
                 Err(e) => {
-                    repl.globals = vm.take_globals();
+                    {
+                        let (g, mg, ms) = vm.take_globals_with_meta();
+                        repl.globals = g;
+                        repl.meta_globals = mg;
+                        repl.metadata_store = ms;
+                    }
                     vm.cleanup();
                     return Err(e.into_python_exception(&executor.interns, &executor.code));
                 }
@@ -745,7 +819,12 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
             let vm_state = if converted.needs_snapshot() {
                 Some(vm.snapshot())
             } else {
-                repl.globals = vm.take_globals();
+                {
+                    let (g, mg, ms) = vm.take_globals_with_meta();
+                    repl.globals = g;
+                    repl.meta_globals = mg;
+                    repl.metadata_store = ms;
+                }
                 vm.cleanup();
                 None
             };
@@ -840,6 +919,8 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
     fn into_repl(self) -> MontyRepl<T> {
         let Self { mut repl, vm_state, .. } = self;
         repl.globals = vm_state.globals;
+        repl.meta_globals = vm_state.meta_globals;
+        repl.metadata_store = vm_state.metadata_store;
         repl
     }
 
@@ -867,7 +948,7 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
             );
 
             let vm_result = match ext_result {
-                ExtFunctionResult::Return(obj) => vm.resume(obj),
+                ExtFunctionResult::Return(obj, meta) => vm.resume(obj, meta.as_ref()),
                 ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
                 ExtFunctionResult::Future(raw_call_id) => {
                     let call_id = CallId::new(raw_call_id);
@@ -885,7 +966,10 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
             let vm_state = if converted.needs_snapshot() {
                 Some(vm.snapshot())
             } else {
-                repl.globals = vm.take_globals();
+                let (globals, meta_globals, metadata_store) = vm.take_globals_with_meta();
+                repl.globals = globals;
+                repl.meta_globals = meta_globals;
+                repl.metadata_store = metadata_store;
                 vm.cleanup();
                 None
             };
@@ -899,26 +983,33 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
 // Private helper functions
 // ---------------------------------------------------------------------------
 
-/// Injects input values into the VM's global namespace slots.
+/// Injects input values with metadata into the VM's global namespace slots.
 ///
-/// Converts each `MontyObject` to a `Value` while the VM is alive, then stores
-/// it in the global slot that the compiler assigned for the corresponding input name.
+/// Converts each `AnnotatedObject` to a `Value` + `MetadataId` while the VM is
+/// alive, then stores both in the global slot that the compiler assigned for the
+/// corresponding input name.
 fn inject_inputs_into_vm(
     executor: &Executor,
-    input_values: Vec<MontyObject>,
+    input_values: Vec<AnnotatedObject>,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> Result<(), MontyException> {
-    for (name, obj) in executor.input_names.iter().zip(input_values) {
+    for (name, input) in executor.input_names.iter().zip(input_values) {
         let slot = executor
             .name_map
             .get(name)
             .expect("input name should have a namespace slot")
             .index();
-        let value = obj
+        let meta_id = match &input.metadata {
+            Some(meta) => vm.metadata_store.intern_object_metadata(meta),
+            None => MetadataId::DEFAULT,
+        };
+        let value = input
+            .value
             .to_value(vm)
             .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
         let old = mem::replace(&mut vm.globals[slot], value);
         old.drop_with_heap(vm);
+        vm.meta_globals[slot] = meta_id;
     }
     Ok(())
 }
@@ -945,11 +1036,14 @@ fn build_repl_progress<T: ResourceTracker>(
     }
 
     match converted {
-        ConvertedExit::Complete(obj) => {
+        ConvertedExit::Complete(obj, meta) => {
             let Executor { name_map, interns, .. } = executor;
             repl.global_name_map = name_map;
             repl.interns = interns;
-            Ok(ReplProgress::Complete { repl, value: obj })
+            Ok(ReplProgress::Complete {
+                repl,
+                value: AnnotatedObject::new(obj, meta),
+            })
         }
         ConvertedExit::FunctionCall {
             function_name,

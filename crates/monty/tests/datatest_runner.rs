@@ -18,8 +18,8 @@ use std::{
 use ahash::AHashMap;
 use chrono::{Datelike, Timelike};
 use monty::{
-    ExcType, ExtFunctionResult, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyObject, MontyRun,
-    NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
+    AnnotatedObject, ExcType, ExtFunctionResult, LimitedTracker, MontyDate, MontyDateTime, MontyException, MontyObject,
+    MontyRun, NameLookupResult, OsFunction, PrintWriter, ResourceLimits, RunProgress, dir_stat, file_stat,
     fs::{MountMode, MountTable, OverlayState},
 };
 use pyo3::{prelude::*, types::PyDict};
@@ -360,7 +360,12 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
         "get_list" => {
             assert!(args.is_empty(), "get_list requires no arguments");
             DispatchResult::Sync(
-                MontyObject::List(vec![MontyObject::Int(1), MontyObject::Int(2), MontyObject::Int(3)]).into(),
+                MontyObject::List(vec![
+                    MontyObject::Int(1).into(),
+                    MontyObject::Int(2).into(),
+                    MontyObject::Int(3).into(),
+                ])
+                .into(),
             )
         }
         "raise_error" => {
@@ -557,10 +562,10 @@ fn extract_point_fields(obj: &MontyObject) -> (i64, i64) {
             let mut x = 0i64;
             let mut y = 0i64;
             for (key, value) in attrs {
-                if let MontyObject::String(k) = key {
+                if let MontyObject::String(k) = &key.value {
                     match k.as_str() {
-                        "x" => x = i64::try_from(value).expect("x must be int"),
-                        "y" => y = i64::try_from(value).expect("y must be int"),
+                        "x" => x = i64::try_from(&value.value).expect("x must be int"),
+                        "y" => y = i64::try_from(&value.value).expect("y must be int"),
                         _ => {}
                     }
                 }
@@ -588,10 +593,10 @@ fn extract_user_name(obj: &MontyObject) -> String {
     match obj {
         MontyObject::Dataclass { attrs, .. } => {
             for (key, value) in attrs {
-                if let MontyObject::String(k) = key
+                if let MontyObject::String(k) = &key.value
                     && k == "name"
                 {
-                    return String::try_from(value).expect("name must be str");
+                    return String::try_from(&value.value).expect("name must be str");
                 }
             }
             panic!("User dataclass has no 'name' field");
@@ -941,7 +946,7 @@ fn dispatch_os_call(
         OsFunction::Iterdir => {
             if let Some(entries) = get_virtual_dir_entries(&path) {
                 // Return Path objects, not strings
-                let list: Vec<MontyObject> = entries.into_iter().map(MontyObject::Path).collect();
+                let list: Vec<AnnotatedObject> = entries.into_iter().map(|e| MontyObject::Path(e).into()).collect();
                 MontyObject::List(list).into()
             } else {
                 MontyException::new(
@@ -1219,7 +1224,7 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
     if let Expectation::RefCounts(expected) = expectation {
         match MontyRun::new(code.to_owned(), &test_name, vec![]) {
             Ok(ex) => {
-                let result = ex.run_ref_counts(vec![]);
+                let result = ex.run_ref_counts(Vec::<monty::MontyObject>::new());
                 match result {
                     Ok(monty::RefCountOutput {
                         counts,
@@ -1270,7 +1275,11 @@ fn try_run_test(path: &Path, code: &str, expectation: &Expectation) -> Result<()
     match MontyRun::new(code.to_owned(), &test_name, vec![]) {
         Ok(ex) => {
             let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-            let result = ex.run(vec![], LimitedTracker::new(limits), PrintWriter::Stdout);
+            let result = ex.run(
+                Vec::<monty::MontyObject>::new(),
+                LimitedTracker::new(limits),
+                PrintWriter::Stdout,
+            );
             match result {
                 Ok(obj) => match expectation {
                     Expectation::ReturnStr(expected) => {
@@ -1615,11 +1624,15 @@ fn try_run_mount_fs_test(path: &Path, code: &str, expectation: &Expectation) -> 
 /// to `Path('/mnt')` so Python code can access the mounted directory.
 fn run_mount_fs_iter_loop(exec: MontyRun, mount_table: &mut MountTable) -> Result<MontyObject, MontyException> {
     let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
+    let mut progress = exec.start(
+        Vec::<monty::MontyObject>::new(),
+        LimitedTracker::new(limits),
+        PrintWriter::Stdout,
+    )?;
 
     loop {
         match progress {
-            RunProgress::Complete(result) => return Ok(result),
+            RunProgress::Complete(annotated) => return Ok(annotated.value),
             RunProgress::FunctionCall(call) => {
                 // No external function calls expected in mount-fs tests.
                 panic!("unexpected FunctionCall in mount-fs test: {}", call.function_name);
@@ -1638,7 +1651,7 @@ fn run_mount_fs_iter_loop(exec: MontyRun, mount_table: &mut MountTable) -> Resul
                 // Dispatch through the mount table first.
                 let result = mount_table.handle_os_call(call.function, &call.args, &call.kwargs);
                 let ext_result = match result {
-                    Some(Ok(obj)) => ExtFunctionResult::Return(obj),
+                    Some(Ok(obj)) => ExtFunctionResult::Return(obj, None),
                     Some(Err(err)) => ExtFunctionResult::Error(err.into_exception()),
                     None => {
                         // Non-filesystem operation — dispatch to the regular handler.
@@ -1662,7 +1675,11 @@ fn run_mount_fs_iter_loop(exec: MontyRun, mount_table: &mut MountTable) -> Resul
 /// - Async functions: `state.run_pending()` creates a future, resolved via `ResolveFutures`
 fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
     let limits = ResourceLimits::new().max_recursion_depth(Some(TEST_RECURSION_LIMIT));
-    let mut progress = exec.start(vec![], LimitedTracker::new(limits), PrintWriter::Stdout)?;
+    let mut progress = exec.start(
+        Vec::<monty::MontyObject>::new(),
+        LimitedTracker::new(limits),
+        PrintWriter::Stdout,
+    )?;
 
     // Track pending async calls: (call_id, result_value)
     let mut pending_results: Vec<(u32, MontyObject)> = Vec::new();
@@ -1677,7 +1694,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
         }
 
         match progress {
-            RunProgress::Complete(result) => return Ok(result),
+            RunProgress::Complete(annotated) => return Ok(annotated.value),
             RunProgress::FunctionCall(call) => {
                 // Method calls on dataclasses are dispatched to the host.
                 // Dispatch known methods; return AttributeError for unknown ones.
@@ -1707,7 +1724,7 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                     .filter_map(|p| {
                         pending_results.iter().position(|(id, _)| id == p).map(|idx| {
                             let (call_id, value) = pending_results.remove(idx);
-                            (call_id, ExtFunctionResult::Return(value))
+                            (call_id, ExtFunctionResult::Return(value, None))
                         })
                     })
                     .collect();
@@ -1737,9 +1754,9 @@ fn run_iter_loop(exec: MontyRun) -> Result<MontyObject, MontyException> {
                     "CONST_FLOAT" => NameLookupResult::Value(MontyObject::Float(3.14)),
                     "CONST_BOOL" => NameLookupResult::Value(MontyObject::Bool(true)),
                     "CONST_LIST" => NameLookupResult::Value(MontyObject::List(vec![
-                        MontyObject::Int(1),
-                        MontyObject::Int(2),
-                        MontyObject::Int(3),
+                        MontyObject::Int(1).into(),
+                        MontyObject::Int(2).into(),
+                        MontyObject::Int(3).into(),
                     ])),
                     "CONST_NONE" => NameLookupResult::Value(MontyObject::None),
                     // Unknown names → NameError

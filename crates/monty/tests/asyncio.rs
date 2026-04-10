@@ -78,7 +78,7 @@ fn drive_to_resolve_futures<T: monty::ResourceTracker>(mut progress: RunProgress
             RunProgress::ResolveFutures(state) => {
                 return (state, collected_call_ids);
             }
-            RunProgress::Complete(_) => {
+            RunProgress::Complete(..) => {
                 panic!("unexpected Complete before ResolveFutures");
             }
             RunProgress::OsCall(call) => {
@@ -93,20 +93,22 @@ fn drive_to_resolve_futures<T: monty::ResourceTracker>(mut progress: RunProgress
 #[test]
 fn resume_with_all_call_ids() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
     assert_eq!(call_ids.len(), 2, "should have 2 pending calls");
 
     // Resume with all results at once
     let results = vec![
-        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10))),
-        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32))),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10), None)),
+        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32), None)),
     ];
 
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
     let result = progress.into_complete().expect("should complete");
-    assert_eq!(result, MontyObject::Int(42));
+    assert_eq!(result.value, MontyObject::Int(42));
 }
 
 // === Test: Resume with partial results ===
@@ -114,23 +116,25 @@ fn resume_with_all_call_ids() {
 #[test]
 fn resume_with_partial_results() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
     // Resume with only the first result
-    let results = vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10)))];
+    let results = vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10), None))];
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
 
     // Should still need more futures resolved
     let state = progress.into_resolve_futures().expect("should still need futures");
 
     // Resume with the second result
-    let results = vec![(call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32)))];
+    let results = vec![(call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32), None))];
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
 
     let result = progress.into_complete().expect("should complete");
-    assert_eq!(result, MontyObject::Int(42));
+    assert_eq!(result.value, MontyObject::Int(42));
 }
 
 // === Test: Resume with unknown call_id ===
@@ -138,12 +142,14 @@ fn resume_with_partial_results() {
 #[test]
 fn resume_with_unknown_call_id() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, _call_ids) = drive_to_resolve_futures(progress);
 
     // Resume with an unknown call_id
-    let results = vec![(9999, ExtFunctionResult::Return(MontyObject::Int(10)))];
+    let results = vec![(9999, ExtFunctionResult::Return(MontyObject::Int(10), None))];
     let result = state.resume(results, PrintWriter::Stdout);
 
     assert!(result.is_err(), "should error on unknown call_id");
@@ -161,7 +167,9 @@ fn resume_with_unknown_call_id() {
 #[test]
 fn resume_with_empty_results() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -174,12 +182,12 @@ fn resume_with_empty_results() {
 
     // Now resolve everything
     let results = vec![
-        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10))),
-        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32))),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10), None)),
+        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32), None)),
     ];
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
     let result = progress.into_complete().expect("should complete");
-    assert_eq!(result, MontyObject::Int(42));
+    assert_eq!(result.value, MontyObject::Int(42));
 }
 
 // === Test: Resume with error result ===
@@ -187,13 +195,15 @@ fn resume_with_empty_results() {
 #[test]
 fn resume_with_error_result() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
     // Resume with one success and one error
     let results = vec![
-        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10))),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10), None)),
         (
             call_ids[1],
             ExtFunctionResult::Error(MontyException::new(ExcType::ValueError, Some("test error".to_string()))),
@@ -214,19 +224,21 @@ fn resume_with_error_result() {
 #[test]
 fn resume_with_reversed_order() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
     // Resume with results in reverse order - should still work
     let results = vec![
-        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32))), // bar() = 32
-        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10))), // foo() = 10
+        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32), None)), // bar() = 32
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10), None)), // foo() = 10
     ];
 
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
     let result = progress.into_complete().expect("should complete");
-    assert_eq!(result, MontyObject::Int(42));
+    assert_eq!(result.value, MontyObject::Int(42));
 }
 
 // === Test: Three-way gather with incremental resolution ===
@@ -234,25 +246,27 @@ fn resume_with_reversed_order() {
 #[test]
 fn three_way_gather_incremental() {
     let runner = create_gather_three_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
     assert_eq!(call_ids.len(), 3, "should have 3 pending calls");
 
     // Resolve one at a time
-    let results = vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::Int(100)))];
+    let results = vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::Int(100), None))];
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
     let state = progress.into_resolve_futures().expect("need more");
 
-    let results = vec![(call_ids[1], ExtFunctionResult::Return(MontyObject::Int(200)))];
+    let results = vec![(call_ids[1], ExtFunctionResult::Return(MontyObject::Int(200), None))];
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
     let state = progress.into_resolve_futures().expect("need more");
 
-    let results = vec![(call_ids[2], ExtFunctionResult::Return(MontyObject::Int(300)))];
+    let results = vec![(call_ids[2], ExtFunctionResult::Return(MontyObject::Int(300), None))];
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
 
     let result = progress.into_complete().expect("should complete");
-    assert_eq!(result, MontyObject::Int(600));
+    assert_eq!(result.value, MontyObject::Int(600));
 }
 
 // === Test: Duplicate call_id in results (should be fine - second is ignored) ===
@@ -260,20 +274,22 @@ fn three_way_gather_incremental() {
 #[test]
 fn resume_with_duplicate_call_id() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
     // Include duplicate - second value should be ignored
     let results = vec![
-        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10))),
-        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(99))), // duplicate - ignored!
-        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32))),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(10), None)),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(99), None)), // duplicate - ignored!
+        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(32), None)),
     ];
 
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
     let result = progress.into_complete().expect("should complete");
-    assert_eq!(result, MontyObject::Int(42));
+    assert_eq!(result.value, MontyObject::Int(42));
 }
 
 // === Test: gather_error_propagated_as_exception ===
@@ -281,7 +297,9 @@ fn resume_with_duplicate_call_id() {
 #[test]
 fn gather_error_propagated_as_exception() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -325,7 +343,9 @@ await main()
 #[test]
 fn sequential_awaits_second_fails() {
     let runner = create_sequential_awaits_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
 
     // First external call (foo)
@@ -340,7 +360,7 @@ fn sequential_awaits_second_fails() {
     assert_eq!(state.pending_call_ids(), vec![foo_call_id]);
 
     // Resolve foo successfully
-    let results = vec![(foo_call_id, ExtFunctionResult::Return(MontyObject::Int(10)))];
+    let results = vec![(foo_call_id, ExtFunctionResult::Return(MontyObject::Int(10), None))];
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
 
@@ -374,7 +394,9 @@ fn sequential_awaits_second_fails() {
 #[test]
 fn sequential_awaits_first_fails() {
     let runner = create_sequential_awaits_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
     let progress = resolve_name_lookups(progress).unwrap();
 
     // First external call (foo)
@@ -408,7 +430,9 @@ fn sequential_awaits_first_fails() {
 #[test]
 fn gather_first_external_fails_immediately() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
     assert_eq!(call_ids.len(), 2, "should have 2 calls");
@@ -433,7 +457,9 @@ fn gather_first_external_fails_immediately() {
 #[test]
 fn gather_second_external_fails() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -459,7 +485,9 @@ fn gather_second_external_fails() {
 #[test]
 fn gather_both_fail() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
@@ -486,13 +514,15 @@ fn gather_both_fail() {
 #[test]
 fn three_way_gather_partial_error() {
     let runner = create_gather_three_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
     // First and third succeed, second fails
     let results = vec![
-        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(100))),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(100), None)),
         (
             call_ids[1],
             ExtFunctionResult::Error(MontyException::new(
@@ -500,7 +530,7 @@ fn three_way_gather_partial_error() {
                 Some("bar type error".to_string()),
             )),
         ),
-        (call_ids[2], ExtFunctionResult::Return(MontyObject::Int(300))),
+        (call_ids[2], ExtFunctionResult::Return(MontyObject::Int(300), None)),
     ];
 
     let result = state.resume(results, PrintWriter::Stdout);
@@ -514,12 +544,14 @@ fn three_way_gather_partial_error() {
 #[test]
 fn incremental_resolution_error_on_second_round() {
     let runner = create_gather_two_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
     // First resolve one successfully
-    let results = vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::Int(100)))];
+    let results = vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::Int(100), None))];
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
     let state = progress.into_resolve_futures().expect("need more");
 
@@ -544,13 +576,15 @@ fn incremental_resolution_error_on_second_round() {
 #[test]
 fn gather_three_all_at_once_mixed() {
     let runner = create_gather_three_runner();
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     let (state, call_ids) = drive_to_resolve_futures(progress);
 
     let results = vec![
-        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(100))),
-        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(200))),
+        (call_ids[0], ExtFunctionResult::Return(MontyObject::Int(100), None)),
+        (call_ids[1], ExtFunctionResult::Return(MontyObject::Int(200), None)),
     ];
 
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
@@ -600,7 +634,7 @@ fn drive_collecting_calls<T: monty::ResourceTracker>(
             RunProgress::ResolveFutures(state) => {
                 return (state, collected);
             }
-            RunProgress::Complete(_) => {
+            RunProgress::Complete(..) => {
                 panic!("unexpected Complete before ResolveFutures");
             }
             RunProgress::OsCall(call) => {
@@ -642,7 +676,9 @@ await main()
 
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
 
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     // Drive until all initial external calls are made and we need to resolve futures
     let (state, calls) = drive_collecting_calls(progress);
@@ -656,7 +692,7 @@ await main()
     // Resolve all 3 get_lat_lng calls: each returns 100
     let results: Vec<(u32, ExtFunctionResult)> = calls
         .iter()
-        .map(|(id, _)| (*id, ExtFunctionResult::Return(MontyObject::Int(100))))
+        .map(|(id, _)| (*id, ExtFunctionResult::Return(MontyObject::Int(100), None)))
         .collect();
 
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
@@ -677,7 +713,7 @@ await main()
         .iter()
         .map(|(id, name)| {
             let val = if name == "get_temp" { 10 } else { 1 };
-            (*id, ExtFunctionResult::Return(MontyObject::Int(val)))
+            (*id, ExtFunctionResult::Return(MontyObject::Int(val), None))
         })
         .collect();
 
@@ -686,7 +722,7 @@ await main()
     // Each task returns coords(100) + temp(10) + desc(1) = 111
     // main returns 111 + 111 + 111 = 333
     let result = progress.into_complete().expect("should complete");
-    assert_eq!(result, MontyObject::Int(333));
+    assert_eq!(result.value, MontyObject::Int(333));
 }
 
 /// Tests nested gathers with incremental resolution (one task at a time).
@@ -712,14 +748,16 @@ await main()
 
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
 
-    let progress = runner.start(vec![], NoLimitTracker, PrintWriter::Stdout).unwrap();
+    let progress = runner
+        .start(Vec::<monty::MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
 
     // Drive to get the initial step1 calls
     let (state, calls) = drive_collecting_calls(progress);
     assert_eq!(calls.len(), 2, "should have 2 step1 calls");
 
     // Resolve only the FIRST step1 call
-    let results = vec![(calls[0].0, ExtFunctionResult::Return(MontyObject::Int(100)))];
+    let results = vec![(calls[0].0, ExtFunctionResult::Return(MontyObject::Int(100), None))];
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
 
     // First task proceeds to inner gather (step2 + step3), second task still blocked
@@ -731,12 +769,12 @@ await main()
     // Now resolve the second step1 call AND the first task's inner calls
     let mut results: Vec<(u32, ExtFunctionResult)> = vec![
         // Second task's step1
-        (calls[1].0, ExtFunctionResult::Return(MontyObject::Int(200))),
+        (calls[1].0, ExtFunctionResult::Return(MontyObject::Int(200), None)),
     ];
     // First task's inner calls
     for (id, name) in &new_calls {
         let val = if name == "step2" { 10 } else { 1 };
-        results.push((*id, ExtFunctionResult::Return(MontyObject::Int(val))));
+        results.push((*id, ExtFunctionResult::Return(MontyObject::Int(val), None)));
     }
 
     let progress = state.resume(results, PrintWriter::Stdout).unwrap();
@@ -750,7 +788,7 @@ await main()
         .iter()
         .map(|(id, name)| {
             let val = if name == "step2" { 20 } else { 2 };
-            (*id, ExtFunctionResult::Return(MontyObject::Int(val)))
+            (*id, ExtFunctionResult::Return(MontyObject::Int(val), None))
         })
         .collect();
 
@@ -760,5 +798,5 @@ await main()
     // Second task: 200 + 20 + 2 = 222
     // Total: 111 + 222 = 333
     let result = progress.into_complete().expect("should complete");
-    assert_eq!(result, MontyObject::Int(333));
+    assert_eq!(result.value, MontyObject::Int(333));
 }

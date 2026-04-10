@@ -26,6 +26,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{HeapId, HeapItem, HeapRead},
     intern::{Interns, StringId},
+    metadata::MetadataId,
     resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{EitherStr, Value},
@@ -55,6 +56,10 @@ pub(crate) struct NamedTuple {
     field_names: Vec<EitherStr>,
     /// Values in order (same length as field_names).
     items: Vec<Value>,
+    /// Per-element metadata, parallel to `items`.
+    /// `item_metadata[i]` is the metadata for `items[i]`.
+    #[serde(default)]
+    item_metadata: Vec<MetadataId>,
     /// True if any item is a `Value::Ref`. Set at creation time since named tuples are immutable.
     contains_refs: bool,
 }
@@ -73,18 +78,42 @@ impl NamedTuple {
     /// Panics if `field_names.len() != items.len()`.
     #[must_use]
     pub fn new(name: impl Into<EitherStr>, field_names: Vec<EitherStr>, items: Vec<Value>) -> Self {
+        let len = items.len();
+        Self::new_with_metadata(name, field_names, items, vec![MetadataId::DEFAULT; len])
+    }
+
+    /// Creates a new named tuple with per-element metadata.
+    ///
+    /// `metadata` must have the same length as `items`.
+    #[must_use]
+    pub fn new_with_metadata(
+        name: impl Into<EitherStr>,
+        field_names: Vec<EitherStr>,
+        items: Vec<Value>,
+        metadata: Vec<MetadataId>,
+    ) -> Self {
         assert_eq!(
             field_names.len(),
             items.len(),
             "NamedTuple field_names and items must have same length"
         );
+        debug_assert_eq!(items.len(), metadata.len());
         let contains_refs = items.iter().any(|v| matches!(v, Value::Ref(_)));
         Self {
             name: name.into(),
             field_names,
             items,
+            item_metadata: metadata,
             contains_refs,
         }
+    }
+
+    /// Returns the metadata for the element at the given index.
+    ///
+    /// Returns `MetadataId::DEFAULT` if the index is out of bounds.
+    #[must_use]
+    pub fn item_meta(&self, index: usize) -> MetadataId {
+        self.item_metadata.get(index).copied().unwrap_or_default()
     }
 
     /// Returns the type name (e.g., "sys.version_info").

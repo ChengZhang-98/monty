@@ -6,7 +6,7 @@ use std::{
 
 use clap::Parser;
 use monty::{
-    LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
+    AnnotatedObject, LimitedTracker, MontyObject, MontyRepl, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter,
     ReplContinuationMode, ReplProgress, ResourceLimits, ResourceTracker, RunProgress, detect_repl_continuation_mode,
     fs::{MountMode, MountTable, OverlayState},
 };
@@ -239,7 +239,7 @@ fn run_script(
     }
 
     let input_names = vec![];
-    let inputs = vec![];
+    let inputs: Vec<monty::MontyObject> = vec![];
 
     let runner = match MontyRun::new(code, file_path, input_names) {
         Ok(ex) => ex,
@@ -419,8 +419,8 @@ fn execute_repl_snippet(
     if mount_table.is_some() {
         match execute_repl_with_mounts(r, snippet, mount_table) {
             Ok((returned_repl, output)) => {
-                if output != MontyObject::None {
-                    println!("{output}");
+                if output.value != MontyObject::None {
+                    println!("{}", output.value);
                 }
                 *repl = Some(returned_repl);
             }
@@ -455,7 +455,7 @@ fn execute_repl_with_mounts<T: ResourceTracker>(
     r: MontyRepl<T>,
     snippet: &str,
     mount_table: &mut Option<MountTable>,
-) -> Result<(MontyRepl<T>, MontyObject), (MontyRepl<T>, String)> {
+) -> Result<(MontyRepl<T>, AnnotatedObject), (MontyRepl<T>, String)> {
     let mut progress = match r.feed_start(snippet, vec![], PrintWriter::Stdout) {
         Ok(p) => p,
         Err(err) => return Err((err.repl, format!("{}", err.error))),
@@ -503,7 +503,7 @@ fn run_until_complete(
 ) -> Result<MontyObject, String> {
     loop {
         match progress {
-            RunProgress::Complete(value) => return Ok(value),
+            RunProgress::Complete(annotated) => return Ok(annotated.value),
             RunProgress::FunctionCall(call) => {
                 let return_value = resolve_external_call(&call.function_name, &call.args)?;
                 progress = call

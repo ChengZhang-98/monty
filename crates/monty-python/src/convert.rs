@@ -21,6 +21,7 @@ use pyo3::{
 use crate::{
     dataclass::{DcRegistry, dataclass_to_monty, dataclass_to_py, is_dataclass},
     exceptions::{exc_monty_to_py, exc_to_monty_object},
+    non_serializable::PyNonSerializable,
 };
 
 /// Converts a Python object to Monty's `MontyObject` representation.
@@ -57,7 +58,10 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
     } else if let Ok(bytes) = obj.cast::<PyBytes>() {
         Ok(MontyObject::Bytes(bytes.extract()?))
     } else if let Ok(list) = obj.cast::<PyList>() {
-        let items: PyResult<Vec<MontyObject>> = list.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+        let items: PyResult<Vec<_>> = list
+            .iter()
+            .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+            .collect();
         Ok(MontyObject::List(items?))
     } else if let Ok(tuple) = obj.cast::<PyTuple>() {
         // Check for namedtuple BEFORE treating as regular tuple
@@ -80,7 +84,10 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
             // Extract field names as strings
             let field_names: PyResult<Vec<String>> = fields_tuple.iter().map(|f| f.extract::<String>()).collect();
             // Extract values
-            let values: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+            let values: PyResult<Vec<_>> = tuple
+                .iter()
+                .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+                .collect();
             return Ok(MontyObject::NamedTuple {
                 type_name,
                 field_names: field_names?,
@@ -88,7 +95,10 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
             });
         }
         // Regular tuple
-        let items: PyResult<Vec<MontyObject>> = tuple.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+        let items: PyResult<Vec<_>> = tuple
+            .iter()
+            .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+            .collect();
         Ok(MontyObject::Tuple(items?))
     } else if let Ok(dict) = obj.cast::<PyDict>() {
         // in theory we could provide a way of passing the iterator direct to the internal MontyObject construct
@@ -99,10 +109,16 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
                 .collect::<PyResult<Vec<(MontyObject, MontyObject)>>>()?,
         ))
     } else if let Ok(set) = obj.cast::<PySet>() {
-        let items: PyResult<Vec<MontyObject>> = set.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+        let items: PyResult<Vec<_>> = set
+            .iter()
+            .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+            .collect();
         Ok(MontyObject::Set(items?))
     } else if let Ok(frozenset) = obj.cast::<PyFrozenSet>() {
-        let items: PyResult<Vec<MontyObject>> = frozenset.iter().map(|item| py_to_monty(&item, dc_registry)).collect();
+        let items: PyResult<Vec<_>> = frozenset
+            .iter()
+            .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+            .collect();
         Ok(MontyObject::FrozenSet(items?))
     } else if obj.is(obj.py().Ellipsis()) {
         Ok(MontyObject::Ellipsis)
@@ -161,13 +177,17 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
         MontyObject::String(s) => Ok(PyString::new(py, s).into_any().unbind()),
         MontyObject::Bytes(b) => Ok(PyBytes::new(py, b).into_any().unbind()),
         MontyObject::List(items) => {
-            let py_items: PyResult<Vec<Py<PyAny>>> =
-                items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            let py_items: PyResult<Vec<Py<PyAny>>> = items
+                .iter()
+                .map(|item| monty_to_py(py, &item.value, dc_registry))
+                .collect();
             Ok(PyList::new(py, py_items?)?.into_any().unbind())
         }
         MontyObject::Tuple(items) => {
-            let py_items: PyResult<Vec<Py<PyAny>>> =
-                items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            let py_items: PyResult<Vec<Py<PyAny>>> = items
+                .iter()
+                .map(|item| monty_to_py(py, &item.value, dc_registry))
+                .collect();
             Ok(PyTuple::new(py, py_items?)?.into_any().unbind())
         }
         // NamedTuple - create a proper Python namedtuple using collections.namedtuple
@@ -199,28 +219,35 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
             // Convert values and instantiate using _make() which accepts an iterable
             // note `_make` might start with an underscore, but it's a public documented method
             // https://docs.python.org/3/library/collections.html#collections.somenamedtuple._make
-            let py_values: PyResult<Vec<Py<PyAny>>> =
-                values.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            let py_values: PyResult<Vec<Py<PyAny>>> = values
+                .iter()
+                .map(|item| monty_to_py(py, &item.value, dc_registry))
+                .collect();
             let instance = nt_type.call_method1("_make", (py_values?,))?;
             Ok(instance.into_any().unbind())
         }
         MontyObject::Dict(map) => {
             let dict = PyDict::new(py);
             for (k, v) in map {
-                dict.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
+                dict.set_item(
+                    monty_to_py(py, &k.value, dc_registry)?,
+                    monty_to_py(py, &v.value, dc_registry)?,
+                )?;
             }
             Ok(dict.into_any().unbind())
         }
         MontyObject::Set(items) => {
             let set = PySet::empty(py)?;
             for item in items {
-                set.add(monty_to_py(py, item, dc_registry)?)?;
+                set.add(monty_to_py(py, &item.value, dc_registry)?)?;
             }
             Ok(set.into_any().unbind())
         }
         MontyObject::FrozenSet(items) => {
-            let py_items: PyResult<Vec<Py<PyAny>>> =
-                items.iter().map(|item| monty_to_py(py, item, dc_registry)).collect();
+            let py_items: PyResult<Vec<Py<PyAny>>> = items
+                .iter()
+                .map(|item| monty_to_py(py, &item.value, dc_registry))
+                .collect();
             Ok(PyFrozenSet::new(py, &py_items?)?.into_any().unbind())
         }
         // Return the exception instance as a value (not raised)
@@ -236,8 +263,15 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
             .map(Bound::into_any)
             .map(Bound::unbind),
         MontyObject::TimeZone(timezone) => monty_timezone_to_py(py, timezone),
-        // Return Python's built-in type object
-        MontyObject::Type(t) => import_builtins(py)?.getattr(py, t.to_string()),
+        // Return Python's built-in type object when possible, otherwise a string representation.
+        // Non-builtin types (e.g. Dataclass, DateTime) can't be looked up from the builtins module.
+        MontyObject::Type(t) => {
+            if let Some(name) = t.builtin_name() {
+                import_builtins(py)?.getattr(py, name)
+            } else {
+                Ok(PyString::new(py, &format!("<class '{t}'>")).into_any().unbind())
+            }
+        }
         MontyObject::BuiltinFunction(f) => import_builtins(py)?.getattr(py, f.to_string()),
         // Dataclass - use registry to reconstruct original type if available
         MontyObject::Dataclass {
@@ -254,11 +288,62 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
             Ok(path_obj.into_any().unbind())
         }
         // Output-only types - convert to string representation
-        MontyObject::Repr(s) => Ok(PyString::new(py, s).into_any().unbind()),
+        MontyObject::Repr { repr, .. } => Ok(PyString::new(py, repr).into_any().unbind()),
         MontyObject::Cycle(_, placeholder) => Ok(PyString::new(py, placeholder).into_any().unbind()),
         // Function objects are internal to the name lookup protocol and should not normally
         // appear as final output values. If they do, represent as a string with the function name.
         MontyObject::Function { name, .. } => Ok(PyString::new(py, name).into_any().unbind()),
+    }
+}
+
+/// Converts a `MontyObject` to a Python object for the structured print callback.
+///
+/// Like [`monty_to_py`], but wraps non-serializable types (`Repr`, `Cycle`, `Function`)
+/// in [`PyNonSerializable`] instead of converting them to plain strings. This lets
+/// callback consumers distinguish non-serializable values from genuine strings
+/// via `isinstance(obj, NonSerializable)`.
+pub fn monty_to_py_structured(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) -> PyResult<Py<PyAny>> {
+    match obj {
+        MontyObject::Repr { type_name, repr } => Ok(PyNonSerializable {
+            type_name: type_name.clone(),
+            repr: repr.clone(),
+        }
+        .into_pyobject(py)?
+        .into_any()
+        .unbind()),
+        MontyObject::Cycle(_, placeholder) => {
+            let type_name = match placeholder.as_str() {
+                "[...]" => "cycle_list",
+                "(...)" => "cycle_tuple",
+                "{...}" => "cycle_dict",
+                _ => "cycle_other",
+            };
+            Ok(PyNonSerializable {
+                type_name: type_name.to_owned(),
+                repr: placeholder.clone(),
+            }
+            .into_pyobject(py)?
+            .into_any()
+            .unbind())
+        }
+        MontyObject::Function { name, .. } => Ok(PyNonSerializable {
+            type_name: "function".to_owned(),
+            repr: name.clone(),
+        }
+        .into_pyobject(py)?
+        .into_any()
+        .unbind()),
+        // Non-builtin type objects can't be looked up from the builtins module,
+        // so wrap them as NonSerializable instead of delegating to monty_to_py.
+        MontyObject::Type(t) if t.builtin_name().is_none() => Ok(PyNonSerializable {
+            type_name: "type".to_owned(),
+            repr: format!("<class '{t}'>"),
+        }
+        .into_pyobject(py)?
+        .into_any()
+        .unbind()),
+        // All other types delegate to the standard conversion
+        other => monty_to_py(py, other, dc_registry),
     }
 }
 

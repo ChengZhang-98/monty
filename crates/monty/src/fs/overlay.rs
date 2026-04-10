@@ -554,7 +554,7 @@ fn iterdir(
         seen_names.insert(child_name.clone());
 
         if !matches!(entry, OverlayEntry::Deleted) {
-            entries.push(MontyObject::Path(format_child_path(vpath, &child_name)));
+            entries.push(MontyObject::Path(format_child_path(vpath, &child_name)).into());
         }
     }
 
@@ -563,7 +563,7 @@ fn iterdir(
     {
         for name in names {
             if !seen_names.contains(&name) {
-                entries.push(MontyObject::Path(format_child_path(vpath, &name)));
+                entries.push(MontyObject::Path(format_child_path(vpath, &name)).into());
             }
         }
     }

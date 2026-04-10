@@ -26,7 +26,11 @@ use crate::{
     exceptions::{MontyError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
-    monty_cls::{CallbackStringPrint, EitherProgress},
+    metadata::py_to_annotated,
+    monty_cls::{
+        CallbackStringPrint, CallbackStructuredPrint, EitherProgress, resolve_print_callback,
+        unwrap_structured_callback,
+    },
     mount::OsHandler,
 };
 
@@ -115,7 +119,7 @@ impl PyMontyRepl {
     /// lookups are dispatched to the provided callables — matching the behavior
     /// of `Monty.run(external_functions=...)`.
     #[expect(clippy::too_many_arguments)]
-    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, mount=None, os=None))]
+    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, structured_print_callback=None, mount=None, os=None))]
     fn feed_run<'py>(
         &self,
         py: Python<'py>,
@@ -123,18 +127,18 @@ impl PyMontyRepl {
         inputs: Option<&Bound<'_, PyDict>>,
         external_functions: Option<&Bound<'_, PyDict>>,
         print_callback: Option<Py<PyAny>>,
+        structured_print_callback: Option<Py<PyAny>>,
         mount: Option<&Bound<'_, PyAny>>,
         os: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let input_values = extract_repl_inputs(inputs, &self.dc_registry)?;
+        let resolved_cb = resolve_print_callback(py, print_callback, structured_print_callback, &self.dc_registry)?;
 
-        let mut print_cb;
-        let mut print_writer = match print_callback {
-            Some(cb) => {
-                print_cb = CallbackStringPrint::from_py(cb);
-                PrintWriter::Callback(&mut print_cb)
-            }
-            None => PrintWriter::Stdout,
+        let (mut string_cb, mut structured_cb) = make_print_writer_from_callback(py, resolved_cb.as_ref());
+        let mut print_writer = match (&mut string_cb, &mut structured_cb) {
+            (Some(cb), _) => PrintWriter::Callback(cb),
+            (_, Some(cb)) => PrintWriter::Callback(cb),
+            _ => PrintWriter::Stdout,
         };
 
         let os_handler = OsHandler::from_run_args(py, mount, os)?;
@@ -176,24 +180,24 @@ impl PyMontyRepl {
     ///
     /// This enables the same iterative start/resume pattern used by `Monty.start()`,
     /// including support for async external functions via `FutureSnapshot`.
-    #[pyo3(signature = (code, *, inputs=None, print_callback=None))]
+    #[pyo3(signature = (code, *, inputs=None, print_callback=None, structured_print_callback=None))]
     fn feed_start<'py>(
         slf: &Bound<'py, Self>,
         py: Python<'py>,
         code: &str,
         inputs: Option<&Bound<'_, PyDict>>,
         print_callback: Option<Py<PyAny>>,
+        structured_print_callback: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let this = slf.get();
         let input_values = extract_repl_inputs(inputs, &this.dc_registry)?;
+        let print_callback = resolve_print_callback(py, print_callback, structured_print_callback, &this.dc_registry)?;
 
-        let mut print_cb;
-        let print_writer = match &print_callback {
-            Some(cb) => {
-                print_cb = CallbackStringPrint::from_py(cb.clone_ref(py));
-                PrintWriter::Callback(&mut print_cb)
-            }
-            None => PrintWriter::Stdout,
+        let (mut string_cb, mut structured_cb) = make_print_writer_from_callback(py, print_callback.as_ref());
+        let print_writer = match (&mut string_cb, &mut structured_cb) {
+            (Some(cb), _) => PrintWriter::Callback(cb),
+            (_, Some(cb)) => PrintWriter::Callback(cb),
+            _ => PrintWriter::Stdout,
         };
         let mut print_output = SendWrapper::new(print_writer);
 
@@ -239,7 +243,8 @@ impl PyMontyRepl {
     ///
     /// # Raises
     /// Various Python exceptions matching what the code would raise.
-    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, os=None))]
+    #[expect(clippy::too_many_arguments)]
+    #[pyo3(signature = (code, *, inputs=None, external_functions=None, print_callback=None, structured_print_callback=None, os=None))]
     fn feed_run_async<'py>(
         slf: &Bound<'py, Self>,
         py: Python<'py>,
@@ -247,6 +252,7 @@ impl PyMontyRepl {
         inputs: Option<&Bound<'_, PyDict>>,
         external_functions: Option<&Bound<'_, PyDict>>,
         print_callback: Option<Py<PyAny>>,
+        structured_print_callback: Option<Py<PyAny>>,
         os: Option<Py<PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         if let Some(ref os_cb) = os
@@ -263,6 +269,7 @@ impl PyMontyRepl {
         let ext_fns = external_functions.map(|d| d.clone().unbind());
         let repl_owner: Py<Self> = slf.clone().unbind();
         let code_owned = code.to_owned();
+        let print_callback = resolve_print_callback(py, print_callback, structured_print_callback, &this.dc_registry)?;
 
         PyReplAsyncAwaitable::new_py_any(
             py,
@@ -346,7 +353,7 @@ struct PyReplAsyncAwaitable {
 struct ReplAsyncStart {
     repl_owner: Py<PyMontyRepl>,
     code: String,
-    input_values: Vec<(String, MontyObject)>,
+    input_values: Vec<(String, ::monty::AnnotatedObject)>,
     external_functions: Option<Py<PyDict>>,
     os: Option<Py<PyAny>>,
     dc_registry: DcRegistry,
@@ -596,7 +603,7 @@ impl PyMontyRepl {
         &self,
         py: Python<'py>,
         code: &str,
-        input_values: Vec<(String, MontyObject)>,
+        input_values: Vec<(String, ::monty::AnnotatedObject)>,
         external_functions: Option<&Bound<'_, PyDict>>,
         os_handler: Option<&OsHandler>,
         mut print_writer: PrintWriter<'_>,
@@ -648,7 +655,7 @@ impl PyMontyRepl {
         py: Python<'_>,
         repl: CoreMontyRepl<T>,
         code: &str,
-        input_values: Vec<(String, MontyObject)>,
+        input_values: Vec<(String, ::monty::AnnotatedObject)>,
         external_functions: Option<&Bound<'_, PyDict>>,
         os_handler: Option<&OsHandler>,
         print_output: &mut SendWrapper<&mut PrintWriter<'_>>,
@@ -680,7 +687,7 @@ impl PyMontyRepl {
             match progress {
                 ReplProgress::Complete { repl, value } => {
                     put_back(mount_table);
-                    return Ok((value, EitherRepl::from_core(repl)));
+                    return Ok((value.value, EitherRepl::from_core(repl)));
                 }
                 ReplProgress::FunctionCall(call) => {
                     let return_value = if call.method_call {
@@ -793,12 +800,35 @@ impl PyMontyRepl {
     }
 }
 
+/// Creates a `PrintWriter` from an optional callback for use in synchronous entry points.
+///
+/// If the callback is a [`StructuredCallbackMarker`], extracts the inner callback and
+/// creates a [`CallbackStructuredPrint`]. Otherwise creates a [`CallbackStringPrint`].
+///
+/// Returns `(print_writer, _string_cb, _structured_cb)` where the `_` values are
+/// temporaries that must live as long as the writer is used. The writer borrows from them.
+fn make_print_writer_from_callback(
+    py: Python<'_>,
+    callback: Option<&Py<PyAny>>,
+) -> (Option<CallbackStringPrint>, Option<CallbackStructuredPrint>) {
+    match callback {
+        Some(cb) => {
+            if let Some((real_cb, dc_registry)) = unwrap_structured_callback(py, cb) {
+                (None, Some(CallbackStructuredPrint::from_py(real_cb, dc_registry)))
+            } else {
+                (Some(CallbackStringPrint::from_py(cb.clone_ref(py))), None)
+            }
+        }
+        None => (None, None),
+    }
+}
+
 /// Converts a Python dict of `{name: value}` pairs into the `Vec<(String, MontyObject)>`
 /// format expected by the core REPL's `feed_run` and `feed_start`.
 fn extract_repl_inputs(
     inputs: Option<&Bound<'_, PyDict>>,
     dc_registry: &DcRegistry,
-) -> PyResult<Vec<(String, MontyObject)>> {
+) -> PyResult<Vec<(String, ::monty::AnnotatedObject)>> {
     let Some(inputs) = inputs else {
         return Ok(vec![]);
     };
@@ -806,7 +836,7 @@ fn extract_repl_inputs(
         .iter()
         .map(|(key, value)| {
             let name = key.extract::<String>()?;
-            let obj = py_to_monty(&value, dc_registry)?;
+            let obj = py_to_annotated(&value, dc_registry)?;
             Ok((name, obj))
         })
         .collect::<PyResult<_>>()

@@ -10,6 +10,7 @@ use crate::{
     heap::{DropWithHeap, Heap, HeapReader},
     intern::{InternerBuilder, Interns},
     io::PrintWriter,
+    metadata::{AnnotatedObject, MetadataId},
     namespace::NamespaceId,
     object::MontyObject,
     parse::{parse, parse_with_interner},
@@ -65,8 +66,9 @@ impl MontyRun {
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
     #[cfg(feature = "ref-count-return")]
-    pub fn run_ref_counts(&self, inputs: Vec<MontyObject>) -> Result<RefCountOutput, MontyException> {
-        self.executor.run_ref_counts(inputs)
+    pub fn run_ref_counts(&self, inputs: Vec<impl Into<AnnotatedObject>>) -> Result<RefCountOutput, MontyException> {
+        self.executor
+            .run_ref_counts(inputs.into_iter().map(Into::into).collect())
     }
 
     /// Executes the code to completion assuming not external functions or snapshotting.
@@ -80,15 +82,17 @@ impl MontyRun {
     /// * `print` - print output writer
     pub fn run(
         &self,
-        inputs: Vec<MontyObject>,
+        inputs: Vec<impl Into<AnnotatedObject>>,
         resource_tracker: impl ResourceTracker,
         print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
+        let inputs = inputs.into_iter().map(Into::into).collect();
         self.executor.run(inputs, resource_tracker, print)
     }
 
     /// Executes the code to completion with no resource limits, printing to stdout/stderr.
-    pub fn run_no_limits(&self, inputs: Vec<MontyObject>) -> Result<MontyObject, MontyException> {
+    pub fn run_no_limits(&self, inputs: Vec<impl Into<AnnotatedObject>>) -> Result<MontyObject, MontyException> {
+        let inputs = inputs.into_iter().map(Into::into).collect();
         self.run(inputs, NoLimitTracker, PrintWriter::Stdout)
     }
 
@@ -141,10 +145,11 @@ impl MontyRun {
     /// may panic if the VM reaches an inconsistent state (indicating a bug).
     pub fn start<T: ResourceTracker>(
         self,
-        inputs: Vec<MontyObject>,
+        inputs: Vec<impl Into<AnnotatedObject>>,
         resource_tracker: T,
         mut print: PrintWriter<'_>,
     ) -> Result<RunProgress<T>, MontyException> {
+        let inputs: Vec<AnnotatedObject> = inputs.into_iter().map(Into::into).collect();
         let executor = self.executor;
 
         // Create heap and VM with empty globals, then populate inputs with VM alive
@@ -300,7 +305,7 @@ impl Executor {
     /// * `print` - Print output writer
     fn run(
         &self,
-        inputs: Vec<MontyObject>,
+        inputs: Vec<AnnotatedObject>,
         resource_tracker: impl ResourceTracker,
         mut print: PrintWriter<'_>,
     ) -> Result<MontyObject, MontyException> {
@@ -384,7 +389,7 @@ impl Executor {
     ///
     /// Only available when the `ref-count-return` feature is enabled.
     #[cfg(feature = "ref-count-return")]
-    fn run_ref_counts(&self, inputs: Vec<MontyObject>) -> Result<RefCountOutput, MontyException> {
+    fn run_ref_counts(&self, inputs: Vec<AnnotatedObject>) -> Result<RefCountOutput, MontyException> {
         use std::collections::HashSet;
 
         let mut heap = Heap::new(self.namespace_size, NoLimitTracker);
@@ -456,17 +461,23 @@ impl Executor {
     /// properly decrement refcounts for any already-converted values.
     pub(crate) fn populate_inputs(
         &self,
-        inputs: Vec<MontyObject>,
+        inputs: Vec<AnnotatedObject>,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> Result<(), MontyException> {
         if inputs.len() > self.namespace_size {
             return Err(MontyException::runtime_error("too many inputs for namespace"));
         }
         for (i, input) in inputs.into_iter().enumerate() {
+            let meta_id = match &input.metadata {
+                Some(meta) => vm.metadata_store.intern_object_metadata(meta),
+                None => MetadataId::DEFAULT,
+            };
             let value = input
+                .value
                 .to_value(vm)
                 .map_err(|e| MontyException::runtime_error(format!("invalid input type: {e}")))?;
             vm.globals[i] = value;
+            vm.meta_globals[i] = meta_id;
         }
         Ok(())
     }
@@ -481,7 +492,7 @@ pub(crate) fn frame_exit_to_object(
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<MontyObject> {
     match frame_exit_result? {
-        FrameExit::Return(return_value) => Ok(MontyObject::new(return_value, vm)),
+        FrameExit::Return(return_value, _meta) => Ok(MontyObject::new(return_value, vm)),
         FrameExit::ExternalCall {
             function_name, args, ..
         } => {

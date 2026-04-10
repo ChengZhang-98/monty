@@ -282,9 +282,9 @@ impl Monty {
 
                 loop {
                     match progress {
-                        RunProgress::Complete(result) => {
+                        RunProgress::Complete(annotated) => {
                             put_back(mount_table);
-                            return Ok(Either::A(monty_to_js(&result, env)?));
+                            return Ok(Either::A(monty_to_js(&annotated.value, env)?));
                         }
                         RunProgress::FunctionCall(call) => {
                             let return_value = call_external_function(
@@ -690,7 +690,7 @@ impl MontyRepl {
                         ReplProgress::Complete { repl, value } => {
                             self.repl = Some(EitherRepl::from_core(repl));
                             put_back(mount_table);
-                            return Ok(Either::A(monty_to_js(&value, env)?));
+                            return Ok(Either::A(monty_to_js(&value.value, env)?));
                         }
                         ReplProgress::OsCall(call) => {
                             let os_result = if let Some(ref mut table) = mount_table {
@@ -970,7 +970,7 @@ impl MontySnapshot {
         let external_result = match (options.return_value, options.exception) {
             (Some(value), None) => {
                 let monty_value = js_to_monty(value, *env)?;
-                ExtFunctionResult::Return(monty_value)
+                ExtFunctionResult::Return(monty_value, None)
             }
             (None, Some(exc)) => {
                 let monty_exc = MontyException::new(string_to_exc_type(&exc.r#type)?, Some(exc.message));
@@ -1404,9 +1404,11 @@ where
     // Loop to handle OsCall events via the mount table before yielding to JS.
     loop {
         match progress {
-            RunProgress::Complete(result) => {
+            RunProgress::Complete(annotated) => {
                 put_back_mount_state(mount_state);
-                return Ok(Either4::C(MontyComplete { output_value: result }));
+                return Ok(Either4::C(MontyComplete {
+                    output_value: annotated.value,
+                }));
             }
             RunProgress::FunctionCall(call) => {
                 let function_name = call.function_name.clone();
@@ -1684,7 +1686,7 @@ fn call_external_function(
     // SAFETY: [DH] - result_raw is valid on success
     let result = unsafe { Unknown::from_raw_unchecked(env.raw(), result_raw) };
     let monty_result = js_to_monty(result, *env)?;
-    Ok(ExtFunctionResult::Return(monty_result))
+    Ok(ExtFunctionResult::Return(monty_result, None))
 }
 
 /// Extracts exception info from a JS exception object.

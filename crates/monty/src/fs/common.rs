@@ -136,7 +136,7 @@ pub(super) fn stat_fs(path: &Path, vpath: &str) -> Result<MontyObject, MountErro
 pub(super) fn iterdir_fs(host_path: &Path, vpath: &str, mount_host_path: &Path) -> Result<MontyObject, MountError> {
     let mut result = Vec::new();
     for name in list_visible_real_dir_entry_names(host_path, mount_host_path, vpath)? {
-        result.push(MontyObject::Path(format_child_path(vpath, &name)));
+        result.push(MontyObject::Path(format_child_path(vpath, &name)).into());
     }
     Ok(MontyObject::List(result))
 }

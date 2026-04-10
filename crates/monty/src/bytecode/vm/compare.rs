@@ -16,13 +16,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn compare_eq(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         let result = lhs.py_eq(rhs, this)?;
-        this.push(Value::Bool(result));
+        this.push_with_meta(Value::Bool(result), result_meta);
         Ok(())
     }
 
@@ -30,13 +31,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn compare_ne(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         let result = !lhs.py_eq(rhs, this)?;
-        this.push(Value::Bool(result));
+        this.push_with_meta(Value::Bool(result), result_meta);
         Ok(())
     }
 
@@ -47,13 +49,14 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         let result = lhs.py_cmp(rhs, this)?.is_some_and(check);
-        this.push(Value::Bool(result));
+        this.push_with_meta(Value::Bool(result), result_meta);
         Ok(())
     }
 
@@ -69,26 +72,28 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn compare_is(&mut self, negate: bool) {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         let result = lhs.is(rhs);
-        this.push(Value::Bool(if negate { !result } else { result }));
+        this.push_with_meta(Value::Bool(if negate { !result } else { result }), result_meta);
     }
 
     /// Membership test (in/not in).
     pub(super) fn compare_in(&mut self, negate: bool) -> Result<(), RunError> {
         let this = self;
 
-        let container = this.pop(); // container (rhs)
+        let (container, container_meta) = this.pop_with_meta(); // container (rhs)
         defer_drop!(container, this);
-        let item = this.pop(); // item to find (lhs)
+        let (item, item_meta) = this.pop_with_meta(); // item to find (lhs)
         defer_drop!(item, this);
+        let result_meta = this.metadata_store.merge(item_meta, container_meta);
 
         let contained = container.py_contains(item, this)?;
-        this.push(Value::Bool(if negate { !contained } else { contained }));
+        this.push_with_meta(Value::Bool(if negate { !contained } else { contained }), result_meta);
         Ok(())
     }
 
@@ -103,10 +108,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn compare_mod_eq(&mut self, k: &Value) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop(); // divisor (b)
+        let (rhs, rhs_meta) = this.pop_with_meta(); // divisor (b)
         defer_drop!(rhs, this);
-        let lhs = this.pop(); // dividend (a)
+        let (lhs, lhs_meta) = this.pop_with_meta(); // dividend (a)
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         // Try fast path for Int/Float types
         let mod_result = match k {
@@ -116,7 +122,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         if let Some(is_equal) = mod_result {
             // Fast path succeeded
-            this.push(Value::Bool(is_equal));
+            this.push_with_meta(Value::Bool(is_equal), result_meta);
             Ok(())
         } else {
             // Fallback: compute py_mod then compare with py_eq
@@ -138,7 +144,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                     defer_drop!(k_value, this);
 
                     let is_equal = v.py_eq(k_value, this)?;
-                    this.push(Value::Bool(is_equal));
+                    this.push_with_meta(Value::Bool(is_equal), result_meta);
                     Ok(())
                 }
                 Ok(None) => Err(ExcType::type_error("unsupported operand type(s) for %")),

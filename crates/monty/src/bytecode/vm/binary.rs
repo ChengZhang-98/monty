@@ -18,14 +18,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn binary_add(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         match lhs.py_add(rhs, this) {
             Ok(Some(v)) => {
-                this.push(v);
+                this.push_with_meta(v, result_meta);
                 Ok(())
             }
             Ok(None) => {
@@ -46,24 +47,25 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn binary_sub(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         if let Some(result) = this.binary_dict_view_op(lhs, rhs, DictViewBinaryOp::Sub)? {
-            this.push(result);
+            this.push_with_meta(result, result_meta);
             return Ok(());
         }
 
         if let Some(result) = this.binary_set_op(lhs, rhs, SetBinaryOp::Sub)? {
-            this.push(result);
+            this.push_with_meta(result, result_meta);
             return Ok(());
         }
 
         match lhs.py_sub(rhs, this) {
             Ok(Some(v)) => {
-                this.push(v);
+                this.push_with_meta(v, result_meta);
                 Ok(())
             }
             Ok(None) => {
@@ -81,14 +83,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn binary_mult(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         match lhs.py_mult(rhs, this) {
             Ok(Some(v)) => {
-                this.push(v);
+                this.push_with_meta(v, result_meta);
                 Ok(())
             }
             Ok(None) => {
@@ -106,14 +109,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn binary_div(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         match lhs.py_div(rhs, this) {
             Ok(Some(v)) => {
-                this.push(v);
+                this.push_with_meta(v, result_meta);
                 Ok(())
             }
             Ok(None) => {
@@ -131,14 +135,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn binary_floordiv(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         match lhs.py_floordiv(rhs, this) {
             Ok(Some(v)) => {
-                this.push(v);
+                this.push_with_meta(v, result_meta);
                 Ok(())
             }
             Ok(None) => {
@@ -156,14 +161,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn binary_mod(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         match lhs.py_mod(rhs, this) {
             Ok(Some(v)) => {
-                this.push(v);
+                this.push_with_meta(v, result_meta);
                 Ok(())
             }
             Ok(None) => {
@@ -182,14 +188,15 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn binary_pow(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         match lhs.py_pow(rhs, this) {
             Ok(Some(v)) => {
-                this.push(v);
+                this.push_with_meta(v, result_meta);
                 Ok(())
             }
             Ok(None) => {
@@ -210,10 +217,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn binary_bitwise(&mut self, op: BitwiseOp) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         // Set/frozenset operations: |, &, ^ map to union, intersection,
         // symmetric_difference. Shifts don't apply to sets.
@@ -226,12 +234,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         if let Some(set_op) = set_op
             && let Some(result) = this.binary_set_op(lhs, rhs, set_op)?
         {
-            this.push(result);
+            this.push_with_meta(result, result_meta);
             return Ok(());
         }
 
         let result = lhs.py_bitwise(rhs, op, this)?;
-        this.push(result);
+        this.push_with_meta(result, result_meta);
         Ok(())
     }
 
@@ -243,23 +251,24 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn binary_and(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         if let Some(result) = this.binary_dict_view_op(lhs, rhs, DictViewBinaryOp::And)? {
-            this.push(result);
+            this.push_with_meta(result, result_meta);
             return Ok(());
         }
 
         if let Some(result) = this.binary_set_op(lhs, rhs, SetBinaryOp::And)? {
-            this.push(result);
+            this.push_with_meta(result, result_meta);
             return Ok(());
         }
 
         let result = lhs.py_bitwise(rhs, BitwiseOp::And, this)?;
-        this.push(result);
+        this.push_with_meta(result, result_meta);
         Ok(())
     }
 
@@ -267,23 +276,24 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn binary_or(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         if let Some(result) = this.binary_dict_view_op(lhs, rhs, DictViewBinaryOp::Or)? {
-            this.push(result);
+            this.push_with_meta(result, result_meta);
             return Ok(());
         }
 
         if let Some(result) = this.binary_set_op(lhs, rhs, SetBinaryOp::Or)? {
-            this.push(result);
+            this.push_with_meta(result, result_meta);
             return Ok(());
         }
 
         let result = lhs.py_bitwise(rhs, BitwiseOp::Or, this)?;
-        this.push(result);
+        this.push_with_meta(result, result_meta);
         Ok(())
     }
 
@@ -291,23 +301,24 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn binary_xor(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
-        let lhs = this.pop();
+        let (lhs, lhs_meta) = this.pop_with_meta();
         defer_drop!(lhs, this);
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         if let Some(result) = this.binary_dict_view_op(lhs, rhs, DictViewBinaryOp::Xor)? {
-            this.push(result);
+            this.push_with_meta(result, result_meta);
             return Ok(());
         }
 
         if let Some(result) = this.binary_set_op(lhs, rhs, SetBinaryOp::Xor)? {
-            this.push(result);
+            this.push_with_meta(result, result_meta);
             return Ok(());
         }
 
         let result = lhs.py_bitwise(rhs, BitwiseOp::Xor, this)?;
-        this.push(result);
+        this.push_with_meta(result, result_meta);
         Ok(())
     }
 
@@ -323,23 +334,25 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     pub(super) fn inplace_add(&mut self) -> Result<(), RunError> {
         let this = self;
 
-        let rhs = this.pop();
+        let (rhs, rhs_meta) = this.pop_with_meta();
         defer_drop!(rhs, this);
         // Use HeapGuard because inplace addition will push lhs back on the stack if successful
-        let mut lhs_guard = HeapGuard::new(this.pop(), this);
+        let (lhs_val, lhs_meta) = this.pop_with_meta();
+        let mut lhs_guard = HeapGuard::new(lhs_val, this);
         let (lhs, this) = lhs_guard.as_parts_mut();
+        let result_meta = this.metadata_store.merge(lhs_meta, rhs_meta);
 
         // Try in-place operation first (for mutable types like lists)
         if lhs.py_iadd(rhs, this, lhs.ref_id())? {
-            // In-place operation succeeded - push lhs back
+            // In-place operation succeeded - push lhs back with merged metadata
             let (lhs, this) = lhs_guard.into_parts();
-            this.push(lhs);
+            this.push_with_meta(lhs, result_meta);
             return Ok(());
         }
 
         // Next try regular addition
         if let Some(v) = lhs.py_add(rhs, this)? {
-            this.push(v);
+            this.push_with_meta(v, result_meta);
             return Ok(());
         }
 

@@ -31,6 +31,7 @@ use crate::{
     heap_data::{Closure, FunctionDefaults},
     intern::{FunctionId, Interns, StringId},
     io::PrintWriter,
+    metadata::{MetadataId, MetadataStore, ObjectMetadata},
     modules::{StandardLib, json::JsonStringCache},
     os::OsFunction,
     parse::CodeRange,
@@ -249,8 +250,8 @@ macro_rules! handle_call_result {
 
 /// Result of VM execution.
 pub enum FrameExit {
-    /// Execution completed successfully with a return value.
-    Return(Value),
+    /// Execution completed successfully with a return value and its metadata.
+    Return(Value, MetadataId),
 
     /// Execution paused for an external function call.
     ///
@@ -507,6 +508,24 @@ pub struct VMSnapshot {
     ///
     /// Contains call ID counter, task state, pending calls, and resolved futures.
     scheduler: Scheduler,
+
+    /// Parallel metadata stack — one [`MetadataId`] per entry in `stack`.
+    ///
+    /// Maintains the invariant `meta_stack.len() == stack.len()` at all times.
+    #[serde(default)]
+    meta_stack: Vec<MetadataId>,
+
+    /// Parallel metadata for globals — one [`MetadataId`] per entry in `globals`.
+    #[serde(default)]
+    pub(crate) meta_globals: Vec<MetadataId>,
+
+    /// Parallel metadata for the exception stack.
+    #[serde(default)]
+    meta_exception_stack: Vec<MetadataId>,
+
+    /// Interning store for metadata labels and deduplication.
+    #[serde(default)]
+    pub(crate) metadata_store: MetadataStore,
 }
 
 // ============================================================================
@@ -590,6 +609,31 @@ pub struct VM<'h, 'a, T: ResourceTracker> {
     /// across multiple `json.loads()` calls within a single execution. Lazily
     /// initialized on first use, cleaned up in [`cleanup()`](Self::cleanup).
     pub(crate) json_string_cache: JsonStringCache,
+
+    /// Parallel metadata stack — one [`MetadataId`] per entry in `stack`.
+    ///
+    /// Maintains the invariant `meta_stack.len() == stack.len()` at all times.
+    /// When metadata tracking is not used, every entry is [`MetadataId::DEFAULT`].
+    pub(crate) meta_stack: Vec<MetadataId>,
+
+    /// Parallel metadata for globals — one [`MetadataId`] per entry in `globals`.
+    pub(crate) meta_globals: Vec<MetadataId>,
+
+    /// Parallel metadata for the exception stack.
+    pub(crate) meta_exception_stack: Vec<MetadataId>,
+
+    /// Interning store for metadata labels and deduplication.
+    ///
+    /// Owned by the VM and transferred to/from [`VMSnapshot`] on pause/resume.
+    pub(crate) metadata_store: MetadataStore,
+
+    /// Temporary storage for argument metadata during function calls.
+    ///
+    /// Populated by `pop_n_args()` before the arguments are popped from the stack,
+    /// then consumed by `call_sync_function()` when building the callee's namespace.
+    /// This bridges the gap between argument popping (which discards metadata) and
+    /// namespace creation (which needs the metadata for parameter slots).
+    pending_arg_metadata: Vec<MetadataId>,
 }
 
 impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
@@ -600,6 +644,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         interns: &'a Interns,
         print_writer: PrintWriter<'a>,
     ) -> Self {
+        let meta_globals = vec![MetadataId::DEFAULT; globals.len()];
         Self {
             stack: Vec::with_capacity(64),
             globals,
@@ -613,6 +658,48 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             ext_function_load_ip: None, // Set by LoadGlobalCallable/LoadLocalCallable
             module_code: None,
             json_string_cache: JsonStringCache::default(),
+            meta_stack: Vec::with_capacity(64),
+            meta_globals,
+            meta_exception_stack: Vec::new(),
+            metadata_store: MetadataStore::new(),
+            pending_arg_metadata: Vec::new(),
+        }
+    }
+
+    /// Creates a new VM with pre-populated metadata state.
+    ///
+    /// Used by `MontyRepl` to carry metadata across snippet executions. The
+    /// `meta_globals` and `metadata_store` are restored from the REPL's persistent
+    /// state, ensuring that metadata from prior snippets survives.
+    pub fn new_with_metadata(
+        globals: Vec<Value>,
+        meta_globals: Vec<MetadataId>,
+        metadata_store: MetadataStore,
+        heap: &'h mut HeapReader<'h, T>,
+        interns: &'a Interns,
+        print_writer: PrintWriter<'a>,
+    ) -> Self {
+        // Ensure meta_globals matches globals length
+        let mut meta_globals = meta_globals;
+        meta_globals.resize(globals.len(), MetadataId::DEFAULT);
+        Self {
+            stack: Vec::with_capacity(64),
+            globals,
+            frames: Vec::with_capacity(16),
+            heap,
+            interns,
+            print_writer,
+            exception_stack: Vec::new(),
+            instruction_ip: 0,
+            scheduler: Scheduler::new(),
+            ext_function_load_ip: None,
+            module_code: None,
+            json_string_cache: JsonStringCache::default(),
+            meta_stack: Vec::with_capacity(64),
+            meta_globals,
+            meta_exception_stack: Vec::new(),
+            metadata_store,
+            pending_arg_metadata: Vec::new(),
         }
     }
 
@@ -662,6 +749,14 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         let current_frame_depth = frames.len().saturating_sub(1); // Subtract 1 for root frame which doesn't contribute to depth
         heap.set_recursion_depth(current_frame_depth);
 
+        // Ensure parallel metadata vecs match value vec lengths (handles old snapshots via serde default)
+        let mut meta_stack = snapshot.meta_stack;
+        meta_stack.resize(snapshot.stack.len(), MetadataId::DEFAULT);
+        let mut meta_globals = snapshot.meta_globals;
+        meta_globals.resize(snapshot.globals.len(), MetadataId::DEFAULT);
+        let mut meta_exception_stack = snapshot.meta_exception_stack;
+        meta_exception_stack.resize(snapshot.exception_stack.len(), MetadataId::DEFAULT);
+
         Self {
             stack: snapshot.stack,
             globals: snapshot.globals,
@@ -675,6 +770,11 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             module_code: Some(module_code),
             ext_function_load_ip: None,
             json_string_cache: JsonStringCache::default(),
+            meta_stack,
+            meta_globals,
+            meta_exception_stack,
+            metadata_store: snapshot.metadata_store,
+            pending_arg_metadata: Vec::new(),
         }
     }
 
@@ -700,6 +800,10 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             exception_stack: self.exception_stack,
             instruction_ip: self.instruction_ip,
             scheduler: self.scheduler,
+            meta_stack: self.meta_stack,
+            meta_globals: self.meta_globals,
+            meta_exception_stack: self.meta_exception_stack,
+            metadata_store: self.metadata_store,
         }
     }
 
@@ -718,11 +822,13 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     pub fn cleanup(&mut self) {
         // Drop all exceptions in the exception stack
         self.exception_stack.drain(..).drop_with_heap(self.heap);
+        self.meta_exception_stack.clear();
         // Clean up current task's stack values and frame cell references
         self.cleanup_current_task();
         // Clean up scheduler state (task stacks, pending calls, resolved values, frame cells)
         self.scheduler.cleanup(self.heap);
         self.globals.drain(..).drop_with_heap(self.heap);
+        self.meta_globals.clear();
         // Release cached JSON string values
         self.json_string_cache.drop_all(self.heap);
     }
@@ -740,10 +846,22 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
 
     /// Takes ownership of the globals vector, replacing it with an empty vec.
     ///
-    /// Used by the REPL to reclaim globals after VM execution completes,
-    /// before calling `cleanup()` (which would destroy them in ref-count-panic mode).
+    /// Used by the ref-count-return test infrastructure to inspect globals after
+    /// execution, without needing metadata.
+    #[cfg(feature = "ref-count-return")]
     pub fn take_globals(&mut self) -> Vec<Value> {
+        self.meta_globals.clear();
         mem::take(&mut self.globals)
+    }
+
+    /// Takes ownership of globals, their metadata, and the metadata store.
+    ///
+    /// Used by the REPL to persist metadata across snippet executions.
+    pub fn take_globals_with_meta(&mut self) -> (Vec<Value>, Vec<MetadataId>, MetadataStore) {
+        let globals = mem::take(&mut self.globals);
+        let meta_globals = mem::take(&mut self.meta_globals);
+        let metadata_store = mem::take(&mut self.metadata_store);
+        (globals, meta_globals, metadata_store)
     }
 
     /// Allocates a new `CallId` for an external function call.
@@ -804,28 +922,32 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                     value.drop_with_heap(self);
                 }
                 Opcode::Dup => {
+                    let meta = self.peek_meta();
                     let value = self.peek().clone_with_heap(self);
-                    self.push(value);
+                    self.push_with_meta(value, meta);
                 }
                 Opcode::Dup2 => {
                     let len = self.stack.len();
                     let first = self.stack[len - 2].clone_with_heap(self);
+                    let first_meta = self.meta_stack[len - 2];
                     let second = self.stack[len - 1].clone_with_heap(self);
-                    self.push(first);
-                    self.push(second);
+                    let second_meta = self.meta_stack[len - 1];
+                    self.push_with_meta(first, first_meta);
+                    self.push_with_meta(second, second_meta);
                 }
                 Opcode::Rot2 => {
                     // Swap top two: [a, b] → [b, a]
                     let len = self.stack.len();
                     self.stack.swap(len - 1, len - 2);
+                    self.meta_stack.swap(len - 1, len - 2);
                 }
                 Opcode::Rot3 => {
                     // Rotate top three: [a, b, c] → [c, a, b]
                     // Uses in-place rotation without cloning
                     let len = self.stack.len();
-                    // Move c out, then shift a→b→c, then put c at a's position
                     // Equivalent to: [..rest, a, b, c] → [..rest, c, a, b]
                     self.stack[len - 3..].rotate_right(1);
+                    self.meta_stack[len - 3..].rotate_right(1);
                 }
                 // Constants & Literals
                 Opcode::LoadConst => {
@@ -950,36 +1072,36 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 }
                 // Unary Operations
                 Opcode::UnaryNot => {
-                    let value = self.pop();
+                    let (value, meta) = self.pop_with_meta();
                     let result = !value.py_bool(self);
                     value.drop_with_heap(self);
-                    self.push(Value::Bool(result));
+                    self.push_with_meta(Value::Bool(result), meta);
                 }
                 Opcode::UnaryNeg => {
                     // Unary minus - negate numeric value
-                    let value = self.pop();
+                    let (value, meta) = self.pop_with_meta();
                     match value {
                         Value::Int(n) => {
                             // Use checked_neg to handle i64::MIN overflow
                             if let Some(negated) = n.checked_neg() {
-                                self.push(Value::Int(negated));
+                                self.push_with_meta(Value::Int(negated), meta);
                             } else {
                                 // i64::MIN negated overflows to LongInt
                                 let li = -LongInt::from(n);
                                 match li.into_value(self.heap) {
-                                    Ok(v) => self.push(v),
+                                    Ok(v) => self.push_with_meta(v, meta),
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
                             }
                         }
-                        Value::Float(f) => self.push(Value::Float(-f)),
-                        Value::Bool(b) => self.push(Value::Int(if b { -1 } else { 0 })),
+                        Value::Float(f) => self.push_with_meta(Value::Float(-f), meta),
+                        Value::Bool(b) => self.push_with_meta(Value::Int(if b { -1 } else { 0 }), meta),
                         Value::Ref(id) => match self.heap.get(id) {
                             HeapData::LongInt(li) => {
                                 let negated = -LongInt::new(li.inner().clone());
                                 value.drop_with_heap(self);
                                 match negated.into_value(self.heap) {
-                                    Ok(v) => self.push(v),
+                                    Ok(v) => self.push_with_meta(v, meta),
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
                             }
@@ -988,7 +1110,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                                 value.drop_with_heap(self);
                                 match negated {
                                     Ok(delta) => match self.heap.allocate(HeapData::TimeDelta(delta)) {
-                                        Ok(id) => self.push(Value::Ref(id)),
+                                        Ok(id) => self.push_with_meta(Value::Ref(id), meta),
                                         Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                     },
                                     Err(e) => catch_sync!(self, cached_frame, e),
@@ -1009,14 +1131,14 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 }
                 Opcode::UnaryPos => {
                     // Unary plus - converts bools to int, no-op for other numbers
-                    let value = self.pop();
+                    let (value, meta) = self.pop_with_meta();
                     match value {
-                        Value::Int(_) | Value::Float(_) => self.push(value),
-                        Value::Bool(b) => self.push(Value::Int(i64::from(b))),
+                        Value::Int(_) | Value::Float(_) => self.push_with_meta(value, meta),
+                        Value::Bool(b) => self.push_with_meta(Value::Int(i64::from(b)), meta),
                         Value::Ref(id) => {
                             if matches!(self.heap.get(id), HeapData::LongInt(_)) {
                                 // LongInt - return as-is (value already has correct refcount)
-                                self.push(value);
+                                self.push_with_meta(value, meta);
                             } else {
                                 let value_type = value.py_type(self);
                                 value.drop_with_heap(self);
@@ -1032,17 +1154,17 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 }
                 Opcode::UnaryInvert => {
                     // Bitwise NOT
-                    let value = self.pop();
+                    let (value, meta) = self.pop_with_meta();
                     match value {
-                        Value::Int(n) => self.push(Value::Int(!n)),
-                        Value::Bool(b) => self.push(Value::Int(!i64::from(b))),
+                        Value::Int(n) => self.push_with_meta(Value::Int(!n), meta),
+                        Value::Bool(b) => self.push_with_meta(Value::Int(!i64::from(b)), meta),
                         Value::Ref(id) => {
                             if let HeapData::LongInt(li) = self.heap.get(id) {
                                 // LongInt bitwise NOT: ~x = -(x + 1)
                                 let inverted = -(li.inner() + 1i32);
                                 value.drop_with_heap(self);
                                 match LongInt::new(inverted).into_value(self.heap) {
-                                    Ok(v) => self.push(v),
+                                    Ok(v) => self.push_with_meta(v, meta),
                                     Err(e) => catch_sync!(self, cached_frame, RunError::from(e)),
                                 }
                             } else {
@@ -1143,12 +1265,14 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 // Subscript & Attribute - route through exception handling
                 Opcode::BinarySubscr => {
                     let index = self.pop();
-                    let obj = self.pop();
+                    let (obj, obj_meta) = self.pop_with_meta();
+                    // Try to resolve element-level metadata for list/tuple integer indexing
+                    let elem_meta = self.resolve_subscr_meta(&obj, &index, obj_meta);
                     let result = obj.py_getitem(&index, self);
                     obj.drop_with_heap(self);
                     index.drop_with_heap(self);
                     match result {
-                        Ok(v) => self.push(v),
+                        Ok(v) => self.push_with_meta(v, elem_meta),
                         Err(e) => catch_sync!(self, cached_frame, e),
                     }
                 }
@@ -1166,12 +1290,22 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 Opcode::LoadAttr => {
                     let name_idx = fetch_u16!(cached_frame);
                     let name_id = StringId::from_index(name_idx);
+                    // Capture object metadata before load_attr pops the object
+                    let obj_meta = self.peek_meta();
                     handle_call_result!(self, cached_frame, self.load_attr(name_id));
+                    // Stamp the object's metadata on the attribute that was just pushed
+                    if let Some(last) = self.meta_stack.last_mut() {
+                        *last = obj_meta;
+                    }
                 }
                 Opcode::LoadAttrImport => {
                     let name_idx = fetch_u16!(cached_frame);
                     let name_id = StringId::from_index(name_idx);
+                    let obj_meta = self.peek_meta();
                     handle_call_result!(self, cached_frame, self.load_attr_import(name_id));
+                    if let Some(last) = self.meta_stack.last_mut() {
+                        *last = obj_meta;
+                    }
                 }
                 Opcode::StoreAttr => {
                     let name_idx = fetch_u16!(cached_frame);
@@ -1201,9 +1335,9 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 }
                 Opcode::JumpIfTrueOrPop => {
                     let offset = fetch_i16!(cached_frame);
-                    let value = self.pop();
+                    let (value, meta) = self.pop_with_meta();
                     if value.py_bool(self) {
-                        self.push(value);
+                        self.push_with_meta(value, meta);
                         jump_relative!(cached_frame.ip, offset);
                     } else {
                         value.drop_with_heap(self);
@@ -1211,11 +1345,11 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 }
                 Opcode::JumpIfFalseOrPop => {
                     let offset = fetch_i16!(cached_frame);
-                    let value = self.pop();
+                    let (value, meta) = self.pop_with_meta();
                     if value.py_bool(self) {
                         value.drop_with_heap(self);
                     } else {
-                        self.push(value);
+                        self.push_with_meta(value, meta);
                         jump_relative!(cached_frame.ip, offset);
                     }
                 }
@@ -1439,6 +1573,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                     // Pop the current exception from the stack to re-raise it
                     // If caught, handle_exception will push it back
                     let error = if let Some(exc) = self.exception_stack.pop() {
+                        self.meta_exception_stack.pop();
                         self.make_exception(exc, true) // is_raise=true for reraise
                     } else {
                         // No active exception - create a RuntimeError
@@ -1450,6 +1585,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                     // Pop the current exception from the stack
                     // This restores the previous exception context (if any)
                     if let Some(exc) = self.exception_stack.pop() {
+                        self.meta_exception_stack.pop();
                         exc.drop_with_heap(self);
                     }
                 }
@@ -1464,14 +1600,14 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 }
                 // Return - reload cache after popping frame
                 Opcode::ReturnValue => {
-                    let value = self.pop();
+                    let (value, ret_meta) = self.pop_with_meta();
                     if self.frames.len() == 1 {
                         // Last frame - check if this is main task or spawned task
                         let is_main_task = self.is_main_task();
 
                         if is_main_task {
                             // Module-level return - we're done
-                            return Ok(FrameExit::Return(value));
+                            return Ok(FrameExit::Return(value, ret_meta));
                         }
 
                         // Spawned task completed - handle task completion
@@ -1494,13 +1630,13 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                         }
                         continue;
                     }
-                    // Pop current frame and push return value
+                    // Pop current frame and push return value with its metadata
                     if self.pop_frame() {
                         // This frame indicated evaluation should stop - return to host with value
                         // e.g. `evaluate_function`
-                        return Ok(FrameExit::Return(value));
+                        return Ok(FrameExit::Return(value, ret_meta));
                     }
-                    self.push(value);
+                    self.push_with_meta(value, ret_meta);
                     // Reload cache from parent frame
                     reload_cache!(self, cached_frame);
                 }
@@ -1574,11 +1710,15 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// Resumes execution after an external call completes.
     ///
     /// Pushes the return value onto the stack and continues execution.
-    pub fn resume(&mut self, obj: MontyObject) -> Result<FrameExit, RunError> {
+    pub fn resume(&mut self, obj: MontyObject, obj_meta: Option<&ObjectMetadata>) -> Result<FrameExit, RunError> {
+        let meta_id = match obj_meta {
+            Some(meta) => self.metadata_store.intern_object_metadata(meta),
+            None => MetadataId::DEFAULT,
+        };
         let value = obj
             .to_value(self)
             .map_err(|e| SimpleException::new(ExcType::RuntimeError, Some(format!("invalid return type: {e}"))))?;
-        self.push(value);
+        self.push_with_meta(value, meta_id);
         self.run()
     }
 
@@ -1609,16 +1749,33 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     // Stack Operations
     // ========================================================================
 
-    /// Pushes a value onto the operand stack.
+    /// Pushes a value onto the operand stack with default metadata.
     #[inline]
     pub(crate) fn push(&mut self, value: Value) {
         self.stack.push(value);
+        self.meta_stack.push(MetadataId::DEFAULT);
     }
 
-    /// Pops a value from the operand stack.
+    /// Pushes a value onto the operand stack with the given metadata.
+    #[inline]
+    pub(crate) fn push_with_meta(&mut self, value: Value, meta: MetadataId) {
+        self.stack.push(value);
+        self.meta_stack.push(meta);
+    }
+
+    /// Pops a value from the operand stack, discarding its metadata.
     #[inline]
     pub(super) fn pop(&mut self) -> Value {
+        self.meta_stack.pop();
         self.stack.pop().expect("stack underflow")
+    }
+
+    /// Pops a value and its metadata from the operand stack.
+    #[inline]
+    pub(super) fn pop_with_meta(&mut self) -> (Value, MetadataId) {
+        let meta = self.meta_stack.pop().unwrap_or_default();
+        let value = self.stack.pop().expect("stack underflow");
+        (value, meta)
     }
 
     /// Peeks at the top of the operand stack without removing it.
@@ -1627,10 +1784,26 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         self.stack.last().expect("stack underflow")
     }
 
-    /// Pops n values from the stack in reverse order (first popped is last in vec).
+    /// Peeks at the metadata of the top of the operand stack.
+    #[inline]
+    pub(super) fn peek_meta(&self) -> MetadataId {
+        self.meta_stack.last().copied().unwrap_or_default()
+    }
+
+    /// Pops n values from the stack in reverse order (first popped is last in vec),
+    /// discarding their metadata.
     pub(super) fn pop_n(&mut self, n: usize) -> Vec<Value> {
         let start = self.stack.len() - n;
+        self.meta_stack.truncate(start);
         self.stack.drain(start..).collect()
+    }
+
+    /// Pops n values and their metadata from the stack.
+    pub(super) fn pop_n_with_meta(&mut self, n: usize) -> (Vec<Value>, Vec<MetadataId>) {
+        let start = self.stack.len() - n;
+        let meta = self.meta_stack.drain(start..).collect();
+        let values = self.stack.drain(start..).collect();
+        (values, meta)
     }
 
     // ========================================================================
@@ -1700,6 +1873,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         self.stack
             .drain(frame.stack_base..)
             .for_each(|value| value.drop_with_heap(&mut *self.heap));
+        self.meta_stack.truncate(frame.stack_base);
 
         // Track freed memory for locals
         if frame.locals_count > 0 {
@@ -1715,6 +1889,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// are inlined on the stack), then cleans up each frame's cell references.
     pub(super) fn cleanup_current_task(&mut self) {
         self.stack.drain(..).drop_with_heap(self.heap);
+        self.meta_stack.clear();
         self.frames.clear();
     }
 
@@ -1785,7 +1960,8 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             }));
         }
 
-        self.push(value.clone_with_heap(self));
+        let meta = self.meta_stack[cached_frame.stack_base + slot as usize];
+        self.push_with_meta(value.clone_with_heap(self), meta);
         Ok(None)
     }
 
@@ -1802,7 +1978,8 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             self.ext_function_load_ip = Some(self.instruction_ip);
             self.push(Value::ExtFunction(name_id));
         } else {
-            self.push(value.clone_with_heap(self));
+            let meta = self.meta_stack[cached_frame.stack_base + slot as usize];
+            self.push_with_meta(value.clone_with_heap(self), meta);
         }
     }
 
@@ -1819,7 +1996,8 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             self.ext_function_load_ip = Some(self.instruction_ip);
             self.push(Value::ExtFunction(name_id));
         } else {
-            self.push(value);
+            let meta = self.meta_globals[slot as usize];
+            self.push_with_meta(value, meta);
         }
     }
 
@@ -1843,16 +2021,18 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
 
     /// Pops the top of stack and stores it in a local variable.
     fn store_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) {
-        let value = self.pop();
-        let target = &mut self.stack[cached_frame.stack_base + slot as usize];
-        let old_value = mem::replace(target, value);
+        let (value, meta) = self.pop_with_meta();
+        let idx = cached_frame.stack_base + slot as usize;
+        let old_value = mem::replace(&mut self.stack[idx], value);
+        self.meta_stack[idx] = meta;
         old_value.drop_with_heap(self);
     }
 
     /// Deletes a local variable (sets it to Undefined).
     fn delete_local(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) {
-        let target = &mut self.stack[cached_frame.stack_base + slot as usize];
-        let old_value = mem::replace(target, Value::Undefined);
+        let idx = cached_frame.stack_base + slot as usize;
+        let old_value = mem::replace(&mut self.stack[idx], Value::Undefined);
+        self.meta_stack[idx] = MetadataId::DEFAULT;
         old_value.drop_with_heap(self);
     }
 
@@ -1885,21 +2065,26 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 is_global: true,
             }))
         } else {
-            self.push(value);
+            let meta = self.meta_globals[slot as usize];
+            self.push_with_meta(value, meta);
             Ok(None)
         }
     }
 
     /// Pops the top of stack and stores it in a global variable.
     fn store_global(&mut self, slot: u16) {
-        let value = self.pop();
-        let old_value = mem::replace(&mut self.globals[slot as usize], value);
+        let (value, meta) = self.pop_with_meta();
+        let idx = slot as usize;
+        let old_value = mem::replace(&mut self.globals[idx], value);
+        self.meta_globals[idx] = meta;
         old_value.drop_with_heap(self);
     }
 
     /// Deletes a global variable (sets it to Undefined).
     fn delete_global(&mut self, slot: u16) {
-        let old_value = mem::replace(&mut self.globals[slot as usize], Value::Undefined);
+        let idx = slot as usize;
+        let old_value = mem::replace(&mut self.globals[idx], Value::Undefined);
+        self.meta_globals[idx] = MetadataId::DEFAULT;
         old_value.drop_with_heap(self);
     }
 
@@ -1910,8 +2095,8 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     /// Returns a `NameError` if the cell value is undefined (free variable not bound).
     fn load_cell(&mut self, cached_frame: &CachedFrame<'a>, slot: u16) -> RunResult<()> {
         let cell_id = self.cell_id_from_local(cached_frame, slot);
-        let value = match self.heap.get(cell_id) {
-            HeapData::Cell(c) => c.0.clone_with_heap(self),
+        let (value, cell_meta) = match self.heap.get(cell_id) {
+            HeapData::Cell(c) => (c.value.clone_with_heap(self), c.meta),
             _ => panic!("LoadCell: entry is not a Cell"),
         };
 
@@ -1922,7 +2107,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             return Err(self.free_var_error(name));
         }
 
-        self.push(value);
+        self.push_with_meta(value, cell_meta);
         Ok(())
     }
 
@@ -1949,7 +2134,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
     ///
     /// The cell `HeapId` is read from the frame's local variable slot on the stack.
     fn store_cell(&mut self, cached_frame: &CachedFrame<'_>, slot: u16) {
-        let value = self.pop();
+        let (value, value_meta) = self.pop_with_meta();
         // The guard will clean up the new value if we panic, or the old value if we swap
         let mut guard = HeapGuard::new(value, self);
         let (value, this) = guard.as_parts_mut();
@@ -1958,8 +2143,63 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         let HeapReadOutput::Cell(mut cell) = this.heap.read(cell_id) else {
             panic!("StoreCell: entry is not a Cell")
         };
-        mem::swap(&mut cell.get_mut(this.heap).0, value);
+        let cell_data = cell.get_mut(this.heap);
+        mem::swap(&mut cell_data.value, value);
+        cell_data.meta = value_meta;
     }
+
+    /// Resolves element-level metadata for subscript access on List/Tuple.
+    ///
+    /// For integer indexing into List or Tuple, looks up the element's metadata
+    /// from the container's parallel metadata vec. Falls back to `fallback_meta`
+    /// for non-integer keys, slices, or non-list/tuple containers.
+    fn resolve_subscr_meta(&self, obj: &Value, key: &Value, fallback_meta: MetadataId) -> MetadataId {
+        let Value::Ref(obj_id) = obj else {
+            return fallback_meta;
+        };
+        match self.heap.get(*obj_id) {
+            HeapData::List(list) => {
+                let index = match key {
+                    Value::Int(i) => *i,
+                    Value::Bool(b) => i64::from(*b),
+                    _ => return fallback_meta,
+                };
+                normalize_and_lookup_meta(index, list.len(), |i| list.item_meta(i), fallback_meta)
+            }
+            HeapData::Tuple(tuple) => {
+                let index = match key {
+                    Value::Int(i) => *i,
+                    Value::Bool(b) => i64::from(*b),
+                    _ => return fallback_meta,
+                };
+                let len = tuple.as_slice().len();
+                normalize_and_lookup_meta(index, len, |i| tuple.item_meta(i), fallback_meta)
+            }
+            HeapData::Dict(dict) => dict
+                .value_meta_for_key(key, self.heap, self.interns)
+                .unwrap_or(fallback_meta),
+            _ => fallback_meta,
+        }
+    }
+}
+
+/// Normalizes a Python-style index and looks up metadata at the resolved position.
+///
+/// Returns `fallback` if the index is out of bounds after normalization.
+fn normalize_and_lookup_meta(
+    index: i64,
+    len: usize,
+    lookup: impl FnOnce(usize) -> MetadataId,
+    fallback: MetadataId,
+) -> MetadataId {
+    let Some(len_i64) = i64::try_from(len).ok() else {
+        return fallback;
+    };
+    let norm = if index < 0 { index + len_i64 } else { index };
+    let Some(norm_usize) = usize::try_from(norm).ok() else {
+        return fallback;
+    };
+    if norm_usize < len { lookup(norm_usize) } else { fallback }
 }
 
 // `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`

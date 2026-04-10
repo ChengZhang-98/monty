@@ -7,6 +7,7 @@ use crate::{
     exception_private::{ExcType, ExceptionRaise, RawStackFrame, RunError, SimpleException},
     heap::{HeapData, HeapGuard},
     intern::{StaticStrings, StringId},
+    metadata::MetadataId,
     resource::ResourceTracker,
     types::{PyTrait, Type},
     value::Value,
@@ -156,6 +157,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 // Unwind stack to target depth (drop excess values)
                 while this.stack.len() > target_stack_depth {
                     let value = this.stack.pop().unwrap();
+                    this.meta_stack.pop();
                     value.drop_with_heap(this);
                 }
 
@@ -169,6 +171,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 // Push exception onto the exception_stack for bare raise
                 // This allows nested except handlers to restore outer exception context
                 this.exception_stack.push(exc_value);
+                this.meta_exception_stack.push(MetadataId::DEFAULT);
 
                 // Jump to handler
                 this.current_frame_mut().ip = handler_offset;

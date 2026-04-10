@@ -404,7 +404,9 @@ fn deeply_nested_boolean_or_exceed_limit() {
 /// Helper to run code and get the exception type from a runtime error.
 fn run_and_get_exc_type(code: &str) -> ExcType {
     let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).expect("should parse");
-    let err = runner.run_no_limits(vec![]).expect_err("expected runtime error");
+    let err = runner
+        .run_no_limits(Vec::<monty::MontyObject>::new())
+        .expect_err("expected runtime error");
     err.exc_type()
 }
 

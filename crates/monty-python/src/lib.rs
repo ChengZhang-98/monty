@@ -10,8 +10,10 @@ mod dataclass;
 mod exceptions;
 mod external;
 mod limits;
+mod metadata;
 mod monty_cls;
 mod mount;
+mod non_serializable;
 mod repl;
 mod serialization;
 
@@ -19,8 +21,10 @@ use std::sync::OnceLock;
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 pub use exceptions::{MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
+pub use metadata::{PyAnnotatedValue, PyObjectMetadata};
 pub use monty_cls::{PyFunctionSnapshot, PyFutureSnapshot, PyMonty, PyMontyComplete, PyNameLookupSnapshot};
 pub use mount::PyMountDir;
+pub use non_serializable::PyNonSerializable;
 use pyo3::prelude::*;
 pub use repl::PyMontyRepl;
 
@@ -53,6 +57,8 @@ mod _monty {
     #[pymodule_export]
     use super::MontyTypingError;
     #[pymodule_export]
+    use super::PyAnnotatedValue as AnnotatedValue;
+    #[pymodule_export]
     use super::PyFrame as Frame;
     #[pymodule_export]
     use super::PyFunctionSnapshot as FunctionSnapshot;
@@ -68,6 +74,10 @@ mod _monty {
     use super::PyMountDir as MountDir;
     #[pymodule_export]
     use super::PyNameLookupSnapshot as NameLookupSnapshot;
+    #[pymodule_export]
+    use super::PyNonSerializable as NonSerializable;
+    #[pymodule_export]
+    use super::PyObjectMetadata as ObjectMetadata;
     use super::get_version;
     #[pymodule_export]
     use super::serialization::load_repl_snapshot;

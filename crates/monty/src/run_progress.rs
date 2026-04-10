@@ -17,6 +17,7 @@ use crate::{
     exception_private::{RunError, RunResult},
     heap::{Heap, HeapReader},
     io::PrintWriter,
+    metadata::{AnnotatedObject, MetadataId, ObjectMetadata},
     object::MontyObject,
     os::OsFunction,
     resource::ResourceTracker,
@@ -48,8 +49,8 @@ pub enum RunProgress<T: ResourceTracker> {
     ResolveFutures(ResolveFutures<T>),
     /// Execution paused for an unresolved name lookup.
     NameLookup(NameLookup<T>),
-    /// Execution completed with a final result.
-    Complete(MontyObject),
+    /// Execution completed with a final result and optional provenance metadata.
+    Complete(AnnotatedObject),
 }
 
 impl<T: ResourceTracker> RunProgress<T> {
@@ -73,7 +74,7 @@ impl<T: ResourceTracker> RunProgress<T> {
 
     /// Consumes the progress and returns the final value if execution completed.
     #[must_use]
-    pub fn into_complete(self) -> Option<MontyObject> {
+    pub fn into_complete(self) -> Option<AnnotatedObject> {
         match self {
             Self::Complete(value) => Some(value),
             _ => None,
@@ -338,15 +339,18 @@ impl<T: ResourceTracker> NameLookup<T> {
                     })?;
 
                     // Cache the resolved value in the appropriate slot
+                    // NameLookup-resolved values get default metadata
                     let slot = self.namespace_slot as usize;
                     if self.is_global {
                         let cloned = value.clone_with_heap(&vm);
                         let old = mem::replace(&mut vm.globals[slot], cloned);
+                        vm.meta_globals[slot] = MetadataId::DEFAULT;
                         old.drop_with_heap(&mut vm);
                     } else {
                         let stack_base = vm.current_stack_base();
                         let cloned = value.clone_with_heap(&vm);
                         let old = mem::replace(&mut vm.stack[stack_base + slot], cloned);
+                        vm.meta_stack[stack_base + slot] = MetadataId::DEFAULT;
                         old.drop_with_heap(&mut vm);
                     }
 
@@ -462,7 +466,7 @@ impl<T: ResourceTracker> ResolveFutures<T> {
 
             for (call_id, ext_result) in results {
                 match ext_result {
-                    ExtFunctionResult::Return(obj) => vm.resolve_future(call_id, obj).map_err(|e| {
+                    ExtFunctionResult::Return(obj, _meta) => vm.resolve_future(call_id, obj).map_err(|e| {
                         MontyException::runtime_error(format!("Invalid return type for call {call_id}: {e}"))
                     })?,
                     ExtFunctionResult::Error(exc) => vm.fail_future(call_id, exc.into()),
@@ -550,7 +554,7 @@ impl<T: ResourceTracker> Snapshot<T> {
             );
 
             let vm_result = match ext_result {
-                ExtFunctionResult::Return(obj) => vm.resume(obj),
+                ExtFunctionResult::Return(obj, meta) => vm.resume(obj, meta.as_ref()),
                 ExtFunctionResult::Error(exc) => vm.resume_with_exception(exc.into()),
                 ExtFunctionResult::Future(raw_call_id) => {
                     let call_id = CallId::new(raw_call_id);
@@ -595,7 +599,9 @@ impl From<MontyObject> for NameLookupResult {
 #[derive(Debug)]
 pub enum ExtFunctionResult {
     /// Continues execution with the return value from the external function.
-    Return(MontyObject),
+    /// The optional metadata is interned into the VM's `MetadataStore` and attached
+    /// to the returned value on the stack.
+    Return(MontyObject, Option<ObjectMetadata>),
     /// Continues execution with the exception raised by the external function.
     Error(MontyException),
     /// Pending future — the external function is a coroutine.
@@ -617,7 +623,13 @@ impl ExtFunctionResult {
 
 impl From<MontyObject> for ExtFunctionResult {
     fn from(value: MontyObject) -> Self {
-        Self::Return(value)
+        Self::Return(value, None)
+    }
+}
+
+impl From<AnnotatedObject> for ExtFunctionResult {
+    fn from(value: AnnotatedObject) -> Self {
+        Self::Return(value.value, value.metadata)
     }
 }
 
@@ -637,8 +649,8 @@ impl From<MontyException> for ExtFunctionResult {
 /// and `StringId`s. It exists to separate the conversion phase (needs `&mut VM`)
 /// from the snapshot/progress construction phase (needs owned `Heap`).
 pub(crate) enum ConvertedExit {
-    /// Execution completed with a final result.
-    Complete(MontyObject),
+    /// Execution completed with a final result and optional metadata.
+    Complete(MontyObject, Option<ObjectMetadata>),
     /// External function call or dataclass method call.
     FunctionCall {
         function_name: String,
@@ -669,7 +681,7 @@ pub(crate) enum ConvertedExit {
 impl ConvertedExit {
     /// Returns true if this exit requires a VM snapshot for later resumption.
     pub(crate) fn needs_snapshot(&self) -> bool {
-        !matches!(self, Self::Complete(_) | Self::Error(_))
+        !matches!(self, Self::Complete(..) | Self::Error(_))
     }
 }
 
@@ -682,7 +694,10 @@ pub(crate) fn convert_frame_exit(
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> ConvertedExit {
     match result {
-        Ok(FrameExit::Return(value)) => ConvertedExit::Complete(MontyObject::new(value, vm)),
+        Ok(FrameExit::Return(value, ret_meta)) => {
+            let obj_meta = vm.metadata_store.to_object_metadata(ret_meta);
+            ConvertedExit::Complete(MontyObject::new(value, vm), obj_meta)
+        }
         Ok(FrameExit::ExternalCall {
             function_name,
             args,
@@ -783,7 +798,7 @@ pub(crate) fn build_run_progress<T: ResourceTracker>(
     }
 
     match converted {
-        ConvertedExit::Complete(obj) => Ok(RunProgress::Complete(obj)),
+        ConvertedExit::Complete(obj, meta) => Ok(RunProgress::Complete(AnnotatedObject::new(obj, meta))),
         ConvertedExit::FunctionCall {
             function_name,
             args,

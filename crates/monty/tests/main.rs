@@ -5,11 +5,11 @@ use monty::{MontyObject, MontyRun};
 fn repeat_exec() {
     let ex = MontyRun::new("1 + 2".to_owned(), "test.py", vec![]).unwrap();
 
-    let r = ex.run_no_limits(vec![]).unwrap();
+    let r = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, 3);
 
-    let r = ex.run_no_limits(vec![]).unwrap();
+    let r = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     let int_value: i64 = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, 3);
 }
@@ -18,11 +18,11 @@ fn repeat_exec() {
 fn test_get_interned_string() {
     let ex = MontyRun::new("'foobar'".to_owned(), "test.py", vec![]).unwrap();
 
-    let r = ex.run_no_limits(vec![]).unwrap();
+    let r = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     let int_value: String = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, "foobar");
 
-    let r = ex.run_no_limits(vec![]).unwrap();
+    let r = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
     let int_value: String = r.as_ref().try_into().unwrap();
     assert_eq!(int_value, "foobar");
 }

@@ -11,6 +11,7 @@ use crate::{
     exception_private::{RunError, RunResult, SimpleException},
     heap::{DropWithHeap, HeapId, HeapItem, HeapReadOutput},
     intern::FunctionId,
+    metadata::MetadataId,
     types::{
         Bytes, Dataclass, Dict, DictItemsView, DictKeysView, DictValuesView, FrozenSet, List, LongInt, Module,
         MontyIter, NamedTuple, Path, PyTrait, Range, ReMatch, RePattern, Set, Slice, Str, Tuple, Type, date, datetime,
@@ -180,7 +181,7 @@ impl HeapData {
                 !closure.cells.is_empty() || closure.defaults.iter().any(|v| matches!(v, Value::Ref(_)))
             }
             Self::FunctionDefaults(fd) => fd.defaults.iter().any(|v| matches!(v, Value::Ref(_))),
-            Self::Cell(cell) => matches!(&cell.0, Value::Ref(_)),
+            Self::Cell(cell) => matches!(&cell.value, Value::Ref(_)),
             Self::Dataclass(dc) => dc.has_refs(),
             Self::Iter(iter) => iter.has_refs(),
             Self::Module(m) => m.has_refs(),
@@ -280,19 +281,24 @@ impl HeapData {
     }
 }
 
-/// Thin wrapper around `Value` which is used in the `Cell` variant above.
+/// Cell storage for closure-captured variables.
 ///
-/// The inner value is the cell's mutable payload.
+/// Contains the mutable payload value and its associated metadata.
+/// Used in the `Cell` variant of `HeapData` for closure variable capture.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-#[repr(transparent)]
-pub(crate) struct CellValue(pub(crate) Value);
+pub(crate) struct CellValue {
+    /// The cell's current value.
+    pub value: Value,
+    /// Metadata associated with the value.
+    #[serde(default)]
+    pub meta: MetadataId,
+}
 
 impl Deref for CellValue {
     type Target = Value;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.value
     }
 }
 
@@ -327,11 +333,11 @@ pub(crate) struct FunctionDefaults {
 
 impl HeapItem for CellValue {
     fn py_estimate_size(&self) -> usize {
-        mem::size_of::<Value>()
+        mem::size_of::<Value>() + mem::size_of::<MetadataId>()
     }
 
     fn py_dec_ref_ids(&mut self, stack: &mut Vec<HeapId>) {
-        self.0.py_dec_ref_ids(stack);
+        self.value.py_dec_ref_ids(stack);
     }
 }
 
@@ -689,7 +695,7 @@ impl<'h> PyTrait<'h> for HeapReadOutput<'h> {
                 .interns
                 .get_function(fd.get(vm.heap).func_id)
                 .py_repr_fmt(f, vm.interns, 0)?),
-            Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).0.py_type(vm))?),
+            Self::Cell(cell) => Ok(write!(f, "<cell: {} object>", cell.get(vm.heap).value.py_type(vm))?),
             Self::Range(r) => r.py_repr_fmt(f, vm, heap_ids),
             Self::Slice(s) => s.py_repr_fmt(f, vm, heap_ids),
             Self::Exception(e) => Ok(e.get(vm.heap).py_repr_fmt(f)?),

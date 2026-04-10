@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from types import EllipsisType
 
 from ._monty import (
+    AnnotatedValue,
     Frame,
     FunctionSnapshot,
     FutureSnapshot,
@@ -20,6 +21,8 @@ from ._monty import (
     MontyTypingError,
     MountDir,
     NameLookupSnapshot,
+    NonSerializable,
+    ObjectMetadata,
     __version__,
     load_repl_snapshot,
     load_snapshot,
@@ -34,6 +37,8 @@ __all__ = (
     'ResourceLimits',
     # _monty
     '__version__',
+    'AnnotatedValue',
+    'ObjectMetadata',
     'Monty',
     'MontyRepl',
     'MontyComplete',
@@ -46,6 +51,7 @@ __all__ = (
     'MontyTypingError',
     'Frame',
     'MountDir',
+    'NonSerializable',
     'load_snapshot',
     'load_repl_snapshot',
     # os_access

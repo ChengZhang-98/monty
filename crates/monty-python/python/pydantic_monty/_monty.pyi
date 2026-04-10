@@ -10,6 +10,8 @@ from .os_access import AbstractOS, OsFunction
 
 __all__ = [
     '__version__',
+    'AnnotatedValue',
+    'ObjectMetadata',
     'Monty',
     'MontyRepl',
     'MontyComplete',
@@ -21,11 +23,33 @@ __all__ = [
     'MontyRuntimeError',
     'MontyTypingError',
     'MountDir',
+    'NonSerializable',
     'Frame',
     'load_snapshot',
     'load_repl_snapshot',
 ]
 __version__: str
+
+@final
+class NonSerializable:
+    """A marker object for Monty values that could not be converted to native Python types.
+
+    Returned by ``structured_print_callback`` for non-serializable values such as
+    iterators, ranges, modules, coroutines, and cyclic references. Use
+    ``isinstance(obj, NonSerializable)`` to detect these objects.
+
+    ``str()`` returns the original repr string for backward compatibility.
+    """
+
+    type_name: str
+    """The Python type name of the original value (e.g. ``'range'``, ``'iterator'``, ``'cycle_list'``)."""
+    repr: str
+    """The ``repr()`` string of the original value."""
+
+    def __new__(cls, type_name: str, repr: str) -> Self: ...
+    def __repr__(self) -> str: ...
+    def __str__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
 
 @final
 class MountDir:
@@ -107,6 +131,7 @@ class Monty:
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
@@ -119,7 +144,10 @@ class Monty:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
             external_functions: Dict of external function callbacks
-            print_callback: Optional callback for print output
+            print_callback: Optional callback for print output (per-fragment strings)
+            structured_print_callback: Optional callback for structured print output
+                (called once per ``print()`` with all args as native Python objects).
+                Cannot be used together with ``print_callback``.
             os: Optional callback for OS calls.
                 Called with (function_name, args) where function_name is like 'Path.exists'
                 and args is a tuple of arguments. Must return the appropriate value for the
@@ -138,6 +166,7 @@ class Monty:
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
         Start the code execution and return a progress object, or completion.
@@ -149,7 +178,11 @@ class Monty:
         Arguments:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
-            print_callback: Optional callback for print output
+            print_callback: Optional callback for print output (per-fragment strings)
+            structured_print_callback: Optional callback for structured print output,
+                called once per ``print()`` as ``(stream, objects, sep, end)`` where
+                objects is a list of native Python values. Cannot be used together
+                with ``print_callback``.
 
         Returns:
             FunctionSnapshot if an external function call is pending,
@@ -168,6 +201,7 @@ class Monty:
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
         os: AbstractOS | None = None,
     ) -> Coroutine[Any, Any, Any]:
         """
@@ -180,7 +214,11 @@ class Monty:
             inputs: Dict of input variable values (must match names from __init__)
             limits: Optional resource limits configuration
             external_functions: Dict of external function callbacks (sync or async)
-            print_callback: Optional callback for print output
+            print_callback: Optional callback for print output (per-fragment strings)
+            structured_print_callback: Optional callback for structured print output,
+                called once per ``print()`` as ``(stream, objects, sep, end)`` where
+                objects is a list of native Python values. Cannot be used together
+                with ``print_callback``.
             os: Optional OS access handler for filesystem operations
 
         Returns:
@@ -280,6 +318,7 @@ class MontyRepl:
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
@@ -292,6 +331,18 @@ class MontyRepl:
         When `external_functions` is provided, external function calls and
         name lookups are dispatched to the provided callables — matching the
         behavior of `Monty.run(external_functions=...)`.
+
+        Arguments:
+            code: The Python code snippet to execute
+            inputs: Dict of input values to inject into the REPL namespace
+            external_functions: Dict of external function callbacks
+            print_callback: Optional callback for print output (per-fragment strings)
+            structured_print_callback: Optional callback for structured print output,
+                called once per ``print()`` as ``(stream, objects, sep, end)`` where
+                objects is a list of native Python values. Cannot be used together
+                with ``print_callback``.
+            mount: Optional mount directory or list of mount directories
+            os: Optional callback for OS calls
         """
 
     def feed_run_async(
@@ -301,6 +352,7 @@ class MontyRepl:
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
         os: AbstractOS | None = None,
     ) -> Coroutine[Any, Any, Any]:
         """
@@ -313,7 +365,11 @@ class MontyRepl:
             code: The Python code snippet to execute
             inputs: Dict of input values to inject into the REPL namespace
             external_functions: Dict of external function callbacks (sync or async)
-            print_callback: Optional callback for print output
+            print_callback: Optional callback for print output (per-fragment strings)
+            structured_print_callback: Optional callback for structured print output,
+                called once per ``print()`` as ``(stream, objects, sep, end)`` where
+                objects is a list of native Python values. Cannot be used together
+                with ``print_callback``.
             os: Optional OS access handler for filesystem operations
 
         Returns:
@@ -329,6 +385,7 @@ class MontyRepl:
         *,
         inputs: dict[str, Any] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
         Start executing an incremental snippet, yielding snapshots for external calls.
@@ -343,6 +400,15 @@ class MontyRepl:
         including support for async external functions via `FutureSnapshot`.
 
         On completion or error, the REPL state is automatically restored.
+
+        Arguments:
+            code: The Python code snippet to execute
+            inputs: Dict of input values to inject into the REPL namespace
+            print_callback: Optional callback for print output (per-fragment strings)
+            structured_print_callback: Optional callback for structured print output,
+                called once per ``print()`` as ``(stream, objects, sep, end)`` where
+                objects is a list of native Python values. Cannot be used together
+                with ``print_callback``.
         """
 
     def dump(self) -> bytes:
@@ -591,12 +657,69 @@ class FutureSnapshot:
     def __repr__(self) -> str: ...
 
 @final
+class ObjectMetadata:
+    """Provenance metadata attached to a value.
+
+    Tracks where a value came from (producers), who may see it (consumers),
+    and classification labels (tags).
+
+    **Important:** ``consumers=None`` (the default) means *universal access* —
+    any consumer may see the value. ``consumers=frozenset()`` means *no consumer*
+    is allowed to see the value. These are very different:
+
+    - ``ObjectMetadata()`` → universal consumers (no restrictions)
+    - ``ObjectMetadata(consumers=frozenset())`` → empty consumer set (nobody)
+
+    Label strings must be non-empty.
+    """
+
+    producers: frozenset[str]
+    """Source names that contributed to this value."""
+    consumers: frozenset[str] | None
+    """Allowed consumer names. ``None`` = universal (no restriction, any consumer
+    may see the value). ``frozenset()`` = empty set (no consumer is allowed).
+    When two values combine, consumers are *intersected* (most restrictive wins)."""
+    tags: frozenset[str]
+    """Classification labels (e.g. ``"pii"``, ``"credential"``)."""
+
+    def __new__(
+        cls,
+        *,
+        producers: frozenset[str] | None = None,
+        consumers: frozenset[str] | None = None,
+        tags: frozenset[str] | None = None,
+    ) -> Self: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+
+@final
+class AnnotatedValue:
+    """A value paired with provenance metadata.
+
+    Use ``AnnotatedValue`` to attach metadata when passing inputs to
+    :meth:`Monty.run` / :meth:`Monty.start`, or when resuming a
+    :class:`FunctionSnapshot` with a return value.
+    """
+
+    value: Any
+    """The underlying Python value."""
+    metadata: ObjectMetadata
+    """The provenance metadata for this value."""
+
+    def __new__(cls, value: Any, metadata: ObjectMetadata) -> Self: ...
+    def __repr__(self) -> str: ...
+
+@final
 class MontyComplete:
     """The result of a completed code execution."""
 
     @property
     def output(self) -> Any:
         """The final output value from the executed code."""
+
+    @property
+    def metadata(self) -> ObjectMetadata | None:
+        """Provenance metadata for the output value, or ``None`` if not tracked."""
 
     def __repr__(self) -> str: ...
 

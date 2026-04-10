@@ -4,7 +4,7 @@
 //! functions for executing function calls. The main entry points are the `exec_*`
 //! methods which are called from the VM's main dispatch loop.
 
-use std::mem;
+use std::{iter, mem};
 
 use super::{CallFrame, VM};
 use crate::{
@@ -17,6 +17,7 @@ use crate::{
     heap::{DropWithHeap, HeapData, HeapGuard, HeapId},
     heap_data::CellValue,
     intern::{FunctionId, StringId},
+    metadata::MetadataId,
     os::OsFunction,
     resource::ResourceTracker,
     types::{Dict, PyTrait, Type, bytes::call_bytes_method, str::call_str_method},
@@ -240,6 +241,13 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
     /// Pops n arguments from the stack and wraps them in `ArgValues`.
     fn pop_n_args(&mut self, n: usize) -> ArgValues {
+        // Capture argument metadata before popping — stored in pending_arg_metadata
+        // for call_sync_function to read when building the callee's namespace.
+        self.pending_arg_metadata.clear();
+        if n > 0 {
+            let start = self.meta_stack.len() - n;
+            self.pending_arg_metadata.extend_from_slice(&self.meta_stack[start..]);
+        }
         match n {
             0 => ArgValues::Empty,
             1 => ArgValues::One(self.pop()),
@@ -318,7 +326,7 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 // Mark the frame as an exit point from the `run()` loop
                 self.current_frame_mut().should_return = true;
                 match self.run()? {
-                    FrameExit::Return(v) => Ok(v),
+                    FrameExit::Return(v, _meta) => Ok(v),
                     FrameExit::ResolveFutures(_)
                     | FrameExit::ExternalCall { .. }
                     | FrameExit::OsCall { .. }
@@ -422,8 +430,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         defer_drop!(args_tuple, this);
         defer_drop!(callable, this);
 
-        // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple(args_tuple);
+        // Extract positional args and their per-element metadata from tuple
+        let (copied_args, arg_meta) = this.extract_args_tuple_with_meta(args_tuple);
+
+        // Populate pending_arg_metadata so call_sync_function can apply it
+        this.pending_arg_metadata.clear();
+        this.pending_arg_metadata.extend(arg_meta);
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
@@ -449,8 +461,12 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let this = self;
         defer_drop!(args_tuple, this);
 
-        // Extract positional args from tuple
-        let copied_args = this.extract_args_tuple_for_attr(args_tuple);
+        // Extract positional args and their per-element metadata from tuple
+        let (copied_args, arg_meta) = this.extract_args_tuple_with_meta(args_tuple);
+
+        // Populate pending_arg_metadata so call_sync_function can apply it
+        this.pending_arg_metadata.clear();
+        this.pending_arg_metadata.extend(arg_meta);
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
@@ -463,19 +479,25 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         this.call_attr(obj, name_id, args)
     }
 
-    /// Extracts arguments from a tuple for `CallFunctionExtended`.
+    /// Extracts argument values and their per-element metadata from a tuple.
+    ///
+    /// Used by both `call_function_extended` and `call_attr_extended` to unpack
+    /// `*args` tuples while preserving per-element metadata for propagation to
+    /// the callee's parameter slots via `pending_arg_metadata`.
     ///
     /// # Panics
     /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
-    /// the compiler always emits `ListToTuple` before `CallFunctionExtended`.
-    fn extract_args_tuple(&mut self, args_tuple: &Value) -> Vec<Value> {
+    /// the compiler always emits `ListToTuple` before extended call opcodes.
+    fn extract_args_tuple_with_meta(&mut self, args_tuple: &Value) -> (Vec<Value>, Vec<MetadataId>) {
         let Value::Ref(id) = args_tuple else {
-            unreachable!("CallFunctionExtended: args_tuple must be a Ref")
+            unreachable!("extract_args_tuple_with_meta: args_tuple must be a Ref")
         };
         let HeapData::Tuple(tuple) = self.heap.get(*id) else {
-            unreachable!("CallFunctionExtended: args_tuple must be a Tuple")
+            unreachable!("extract_args_tuple_with_meta: args_tuple must be a Tuple")
         };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
+        let values = tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect();
+        let meta = tuple.item_metadata_slice().to_vec();
+        (values, meta)
     }
 
     /// Builds `ArgValues` with kwargs for `CallFunctionExtended`.
@@ -534,21 +556,6 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 kwargs: KwargsValues::Empty,
             },
         }
-    }
-
-    /// Extracts arguments from a tuple for `CallAttrExtended`.
-    ///
-    /// # Panics
-    /// Panics if `args_tuple` is not a tuple. This indicates a compiler bug since
-    /// the compiler always emits `ListToTuple` before `CallAttrExtended`.
-    fn extract_args_tuple_for_attr(&mut self, args_tuple: &Value) -> Vec<Value> {
-        let Value::Ref(id) = args_tuple else {
-            unreachable!("CallAttrExtended: args_tuple must be a Ref")
-        };
-        let HeapData::Tuple(tuple) = self.heap.get(*id) else {
-            unreachable!("CallAttrExtended: args_tuple must be a Tuple")
-        };
-        tuple.as_slice().iter().map(|v| v.clone_with_heap(self)).collect()
     }
 
     /// Builds `ArgValues` with kwargs for `CallAttrExtended`.
@@ -655,7 +662,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 } else {
                     Value::Undefined
                 };
-                let cell_id = this.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
+                let cell_id = this.heap.allocate(HeapData::Cell(CellValue {
+                    value: cell_value,
+                    meta: MetadataId::DEFAULT,
+                }))?;
                 namespace.resize_with(cell_slot, || Value::Undefined);
                 namespace.push(Value::Ref(cell_id));
             }
@@ -732,7 +742,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
                 } else {
                     Value::Undefined
                 };
-                let cell_id = this.heap.allocate(HeapData::Cell(CellValue(cell_value)))?;
+                let cell_id = this.heap.allocate(HeapData::Cell(CellValue {
+                    value: cell_value,
+                    meta: MetadataId::DEFAULT,
+                }))?;
                 namespace.resize_with(cell_slot, || Value::Undefined);
                 namespace.push(Value::Ref(cell_id));
             }
@@ -754,7 +767,16 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
 
         // 6. Commit the guard (no rollback) and push the frame
         let (namespace, this) = namespace_guard.into_parts();
+        let ns_len = namespace.len();
         this.stack.extend(namespace);
+        // Use pending_arg_metadata for the argument slots, DEFAULT for the rest.
+        // The argument metadata was captured by pop_n_args() before the args were popped.
+        let arg_meta_len = this.pending_arg_metadata.len().min(ns_len);
+        this.meta_stack.extend(this.pending_arg_metadata.drain(..arg_meta_len));
+        if ns_len > arg_meta_len {
+            this.meta_stack
+                .extend(iter::repeat_n(MetadataId::DEFAULT, ns_len - arg_meta_len));
+        }
 
         this.push_frame(CallFrame::new_function(
             code,

@@ -33,7 +33,7 @@ use crate::{
         CallResult, ExternalFunctionRegistry, dispatch_method_call_or_coroutine, py_err_to_ext_result,
         py_obj_to_ext_result,
     },
-    monty_cls::CallbackStringPrint,
+    monty_cls::{CallbackStringPrint, CallbackStructuredPrint, unwrap_structured_callback},
     repl::{EitherRepl, FromCoreRepl, PyMontyRepl},
 };
 
@@ -136,8 +136,8 @@ pub(crate) async fn dispatch_loop_run<T: ResourceTracker + Send + 'static>(
 
     loop {
         match progress {
-            RunProgress::Complete(result) => {
-                return Python::attach(|py| monty_to_py(py, &result, &dc_registry));
+            RunProgress::Complete(annotated) => {
+                return Python::attach(|py| monty_to_py(py, &annotated.value, &dc_registry));
             }
             RunProgress::FunctionCall(call) => {
                 let call_result = dispatch_function_call(
@@ -219,7 +219,7 @@ where
                     let owner = repl_owner.bind(py).get();
                     owner.put_repl(EitherRepl::from_core(repl));
                     cleanup_notifier.finish();
-                    monty_to_py(py, &value, &dc_registry)
+                    monty_to_py(py, &value.value, &dc_registry)
                 });
             }
             ReplProgress::FunctionCall(call) => {
@@ -305,17 +305,25 @@ where
 
 /// Creates a `PrintWriter` from an optional print callback and invokes `f` with it.
 ///
-/// If a callback is provided, creates a `CallbackStringPrint` that acquires
-/// the GIL internally via `Python::attach()` when the VM calls print.
-/// Otherwise uses `PrintWriter::Stdout`.
+/// If the callback is a [`StructuredCallbackMarker`](crate::monty_cls::StructuredCallbackMarker),
+/// creates a [`CallbackStructuredPrint`] that delivers all `print()` arguments as
+/// structured Python objects in a single call. Otherwise creates a [`CallbackStringPrint`]
+/// for the traditional per-fragment string callback.
 ///
 /// Uses a closure pattern because `PrintWriter::Callback` borrows the
-/// `CallbackStringPrint`, so the writer can't outlive this function.
+/// callback struct, so the writer can't outlive this function.
 pub(crate) fn with_print_writer<R>(print_callback: Option<Py<PyAny>>, f: impl FnOnce(PrintWriter<'_>) -> R) -> R {
     match print_callback {
         Some(cb) => {
-            let mut print_cb = CallbackStringPrint::from_py(cb);
-            f(PrintWriter::Callback(&mut print_cb))
+            // Check if this is a structured callback wrapped in a marker
+            let structured = Python::attach(|py| unwrap_structured_callback(py, &cb));
+            if let Some((real_cb, dc_registry)) = structured {
+                let mut print_cb = CallbackStructuredPrint::from_py(real_cb, dc_registry);
+                f(PrintWriter::Callback(&mut print_cb))
+            } else {
+                let mut print_cb = CallbackStringPrint::from_py(cb);
+                f(PrintWriter::Callback(&mut print_cb))
+            }
         }
         None => f(PrintWriter::Stdout),
     }
@@ -397,7 +405,7 @@ fn dispatch_os_call_py(
             .call1((function.to_string(), py_args_tuple, py_kwargs))
         {
             Ok(result) => match py_to_monty(&result, dc_registry) {
-                Ok(obj) => ExtFunctionResult::Return(obj),
+                Ok(obj) => ExtFunctionResult::Return(obj, None),
                 Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
             },
             Err(err) => ExtFunctionResult::Error(exc_py_to_monty(py, &err)),

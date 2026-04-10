@@ -6,6 +6,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::HeapData,
+    object::MontyObject,
     resource::ResourceTracker,
     types::PyTrait,
     value::Value,
@@ -27,24 +28,37 @@ pub fn builtin_print(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues)
     // Extract kwargs first
     let (sep, end) = extract_print_kwargs(kwargs, vm)?;
 
-    // Print positional args with separator, dropping each value after use
-    let mut first = true;
-    for value in positional.as_slice() {
-        if first {
-            first = false;
-        } else if let Some(sep) = &sep {
-            vm.print_writer.stdout_write(sep.as_str().into())?;
-        } else {
-            vm.print_writer.stdout_push(' ')?;
-        }
-        vm.print_writer.stdout_write(value.py_str(vm)?)?;
-    }
+    if vm.print_writer.wants_structured() {
+        // Structured path: convert each Value to MontyObject and deliver all at once
+        let objects: Vec<MontyObject> = positional
+            .as_slice()
+            .iter()
+            .map(|value| MontyObject::from_value(value, vm))
+            .collect();
 
-    // Append end string
-    if let Some(end) = end {
-        vm.print_writer.stdout_write(end.into())?;
+        let sep_str = sep.as_deref().unwrap_or(" ");
+        let end_str = end.as_deref().unwrap_or("\n");
+        vm.print_writer.stdout_write_structured(objects, sep_str, end_str)?;
     } else {
-        vm.print_writer.stdout_push('\n')?;
+        // String path: emit per-argument text fragments with separators
+        let mut first = true;
+        for value in positional.as_slice() {
+            if first {
+                first = false;
+            } else if let Some(sep) = &sep {
+                vm.print_writer.stdout_write(sep.as_str().into())?;
+            } else {
+                vm.print_writer.stdout_push(' ')?;
+            }
+            vm.print_writer.stdout_write(value.py_str(vm)?)?;
+        }
+
+        // Append end string
+        if let Some(end) = end {
+            vm.print_writer.stdout_write(end.into())?;
+        } else {
+            vm.print_writer.stdout_push('\n')?;
+        }
     }
 
     Ok(Value::None)

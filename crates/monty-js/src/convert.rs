@@ -31,7 +31,9 @@
 
 use std::{collections::HashMap, ptr};
 
-use monty::{DictPairs, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
+use monty::{
+    AnnotatedDictPairs, AnnotatedObject, ExcType, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone,
+};
 use napi::{bindgen_prelude::*, sys::Status};
 use num_bigint::BigInt as NumBigInt;
 
@@ -99,7 +101,7 @@ pub fn monty_to_js<'e>(obj: &MontyObject, env: &'e Env) -> Result<JsMontyObject<
             frozen,
         } => create_js_dataclass(name, *type_id, field_names, attrs, *frozen, env)?,
         MontyObject::Path(p) => env.create_string(p)?.into_unknown(env)?,
-        MontyObject::Repr(s) | MontyObject::Cycle(_, s) => env.create_string(s)?.into_unknown(env)?,
+        MontyObject::Repr { repr, .. } | MontyObject::Cycle(_, repr) => env.create_string(repr)?.into_unknown(env)?,
         // Function objects are internal to the name lookup protocol and should not normally
         // appear as final output values. If they do, represent as a string with the function name.
         MontyObject::Function { name, .. } => env.create_string(name)?.into_unknown(env)?,
@@ -168,10 +170,10 @@ fn create_js_buffer<'e>(bytes: &[u8], env: &'e Env) -> Result<Unknown<'e>> {
 }
 
 /// Creates a native JS Array from Monty list items, recursively converting each element.
-fn create_js_array<'e>(items: &[MontyObject], env: &'e Env) -> Result<Array<'e>> {
+fn create_js_array<'e>(items: &[AnnotatedObject], env: &'e Env) -> Result<Array<'e>> {
     let mut arr = env.create_array(items.len().try_into().expect("array size overflows u32"))?;
     for (i, item) in items.iter().enumerate() {
-        let js_item = monty_to_js(item, env)?;
+        let js_item = monty_to_js(&item.value, env)?;
         arr.set(i.try_into().expect("overflow on array index"), js_item)?;
     }
     Ok(arr)
@@ -181,7 +183,7 @@ fn create_js_array<'e>(items: &[MontyObject], env: &'e Env) -> Result<Array<'e>>
 ///
 /// This allows distinguishing tuples from lists in JavaScript while still allowing
 /// array-like access to tuple elements.
-fn create_js_tuple<'e>(items: &[MontyObject], env: &'e Env) -> Result<Unknown<'e>> {
+fn create_js_tuple<'e>(items: &[AnnotatedObject], env: &'e Env) -> Result<Unknown<'e>> {
     let mut arr = create_js_array(items, env)?;
     arr.set_named_property("__tuple__", true)?;
     arr.into_unknown(env)
@@ -193,15 +195,15 @@ fn create_js_tuple<'e>(items: &[MontyObject], env: &'e Env) -> Result<Unknown<'e
 /// - Non-string key types (numbers, booleans, etc.)
 /// - Insertion order
 /// - Proper equality semantics for keys
-fn create_js_map<'e>(pairs: &DictPairs, env: &'e Env) -> Result<Unknown<'e>> {
+fn create_js_map<'e>(pairs: &AnnotatedDictPairs, env: &'e Env) -> Result<Unknown<'e>> {
     let global = env.get_global()?;
     let map_constructor: Function<()> = global.get_named_property("Map")?;
     let map: Object<'e> = map_constructor.new_instance(())?.coerce_to_object()?;
 
     let set_method: Unknown = map.get_named_property("set")?;
     for (k, v) in pairs {
-        let js_key = monty_to_js(k, env)?;
-        let js_value = monty_to_js(v, env)?;
+        let js_key = monty_to_js(&k.value, env)?;
+        let js_value = monty_to_js(&v.value, env)?;
         // Call map.set(key, value) using raw napi to pass two separate arguments
         call_method_2_args(env.raw(), map.raw(), set_method.raw(), js_key.0.raw(), js_value.0.raw())?;
     }
@@ -232,14 +234,14 @@ fn call_method_2_args(
 }
 
 /// Creates a native JS Set from Monty set items.
-fn create_js_set<'e>(items: &[MontyObject], env: &'e Env) -> Result<Unknown<'e>> {
+fn create_js_set<'e>(items: &[AnnotatedObject], env: &'e Env) -> Result<Unknown<'e>> {
     let global = env.get_global()?;
     let set_constructor: Function<()> = global.get_named_property("Set")?;
     let set: Object<'e> = set_constructor.new_instance(())?.coerce_to_object()?;
 
     let add_method: Function = set.get_named_property("add")?;
     for item in items {
-        let js_item = monty_to_js(item, env)?;
+        let js_item = monty_to_js(&item.value, env)?;
         add_method.apply(set, js_item.0)?;
     }
     set.into_unknown(env)
@@ -333,7 +335,7 @@ fn create_js_dataclass<'e>(
     name: &str,
     type_id: u64,
     field_names: &[String],
-    attrs: &DictPairs,
+    attrs: &AnnotatedDictPairs,
     frozen: bool,
     env: &'e Env,
 ) -> Result<Unknown<'e>> {
@@ -360,8 +362,8 @@ fn create_js_dataclass<'e>(
     let attrs_map: HashMap<&str, &MontyObject> = attrs
         .into_iter()
         .filter_map(|(k, v)| {
-            if let MontyObject::String(key) = k {
-                Some((key.as_str(), v))
+            if let MontyObject::String(key) = &k.value {
+                Some((key.as_str(), &v.value))
             } else {
                 None
             }
@@ -555,7 +557,7 @@ fn js_set_to_monty(set: Object, env: Env) -> Result<MontyObject> {
     let values_method: Function<()> = set.get_named_property("values")?;
     let iterator: Object = values_method.apply(set, ())?.coerce_to_object()?;
 
-    let mut items = Vec::new();
+    let mut items: Vec<AnnotatedObject> = Vec::new();
     loop {
         let next_method: Function<()> = iterator.get_named_property("next")?;
         let result: Object = next_method.apply(iterator, ())?.coerce_to_object()?;
@@ -566,7 +568,7 @@ fn js_set_to_monty(set: Object, env: Env) -> Result<MontyObject> {
         }
 
         let value: Unknown = result.get_named_property("value")?;
-        items.push(js_to_monty(value, env)?);
+        items.push(js_to_monty(value, env)?.into());
     }
 
     Ok(MontyObject::Set(items))
@@ -577,11 +579,11 @@ fn js_array_to_monty(arr: Object, env: Env) -> Result<MontyObject> {
     let is_tuple: bool = arr.get_named_property::<Option<bool>>("__tuple__")?.unwrap_or(false);
 
     let length: u32 = arr.get_named_property("length")?;
-    let mut items = Vec::with_capacity(length as usize);
+    let mut items: Vec<AnnotatedObject> = Vec::with_capacity(length as usize);
 
     for i in 0..length {
         let element: Unknown = arr.get_element(i)?;
-        items.push(js_to_monty(element, env)?);
+        items.push(js_to_monty(element, env)?.into());
     }
 
     if is_tuple {
@@ -632,12 +634,18 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
         "Type" => {
             // Type objects can't be fully round-tripped; return as Repr
             let value: String = obj.get_named_property("value")?;
-            Ok(MontyObject::Repr(format!("<class '{value}'>")))
+            Ok(MontyObject::Repr {
+                type_name: "type".to_owned(),
+                repr: format!("<class '{value}'>"),
+            })
         }
         "BuiltinFunction" => {
             // BuiltinFunction objects can't be fully round-tripped; return as Repr
             let value: String = obj.get_named_property("value")?;
-            Ok(MontyObject::Repr(format!("<built-in function {value}>")))
+            Ok(MontyObject::Repr {
+                type_name: "builtin_function".to_owned(),
+                repr: format!("<built-in function {value}>"),
+            })
         }
         "Dataclass" => {
             let name: String = obj.get_named_property("name")?;
@@ -663,14 +671,14 @@ fn js_marked_object_to_monty(obj: &Object, monty_type: &str, env: Env) -> Result
 
             // fields object
             let fields_obj: Object = obj.get_named_property("fields")?;
-            let mut attrs_vec = Vec::new();
+            let mut attrs_vec: Vec<(MontyObject, MontyObject)> = Vec::new();
             for field_name in &field_names {
                 if let Some(value) = fields_obj.get_named_property::<Option<Unknown>>(field_name.as_str())? {
                     let monty_value = js_to_monty(value, env)?;
                     attrs_vec.push((MontyObject::String(field_name.clone()), monty_value));
                 }
             }
-            let attrs = DictPairs::from(attrs_vec);
+            let attrs = AnnotatedDictPairs::from(attrs_vec);
 
             let frozen: bool = obj.get_named_property("frozen")?;
 

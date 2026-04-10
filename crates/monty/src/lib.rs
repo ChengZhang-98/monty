@@ -16,6 +16,7 @@ mod function;
 mod heap_data;
 mod intern;
 mod io;
+mod metadata;
 mod modules;
 mod namespace;
 mod object;
@@ -37,7 +38,11 @@ pub use crate::{
     exception_private::ExcType,
     exception_public::{CodeLoc, MontyException, StackFrame},
     io::{PrintWriter, PrintWriterCallback},
-    object::{DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone},
+    metadata::{AnnotatedObject, ObjectMetadata},
+    object::{
+        AnnotatedDictPairs, DictPairs, InvalidInputError, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta,
+        MontyTimeZone,
+    },
     os::{OsFunction, dir_stat, file_stat, stat_result, symlink_stat},
     repl::{
         MontyRepl, ReplContinuationMode, ReplFunctionCall, ReplNameLookup, ReplOsCall, ReplProgress,

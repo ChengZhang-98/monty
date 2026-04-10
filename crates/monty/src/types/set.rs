@@ -13,15 +13,19 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{ContainsHeap, DropWithHeap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead},
     intern::StaticStrings,
+    metadata::MetadataId,
     resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{EitherStr, Value},
 };
 
-/// Entry in the set storage, containing a value and its cached hash.
+/// Entry in the set storage, containing a value, its metadata, and its cached hash.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct SetEntry {
     pub(crate) value: Value,
+    /// Metadata provenance for this element.
+    #[serde(default)]
+    pub(crate) meta: MetadataId,
     /// Cached hash for efficient lookup and reinsertion.
     pub(crate) hash: u64,
 }
@@ -53,25 +57,25 @@ impl SetStorage {
         }
     }
 
-    /// Creates a SetStorage from a vector of (value, hash) pairs.
+    /// Creates a SetStorage from a vector of (value, meta, hash) tuples.
     ///
     /// This is used to avoid borrow conflicts when we need to copy another set's
     /// contents and then perform operations requiring mutable heap access.
     /// The caller is responsible for handling reference counting.
-    fn from_entries(entries: Vec<(Value, u64)>) -> Self {
+    fn from_entries(entries: Vec<(Value, MetadataId, u64)>) -> Self {
         let mut storage = Self::with_capacity(entries.len());
-        for (idx, (value, hash)) in entries.into_iter().enumerate() {
-            storage.entries.push(SetEntry { value, hash });
+        for (idx, (value, meta, hash)) in entries.into_iter().enumerate() {
+            storage.entries.push(SetEntry { value, meta, hash });
             storage.indices.insert_unique(hash, idx, |&i| storage.entries[i].hash);
         }
         storage
     }
 
-    /// Clones entries with proper reference counting.
-    fn clone_entries(&self, heap: &impl ContainsHeap) -> Vec<(Value, u64)> {
+    /// Clones entries with proper reference counting, including metadata.
+    fn clone_entries(&self, heap: &impl ContainsHeap) -> Vec<(Value, MetadataId, u64)> {
         self.entries
             .iter()
-            .map(|e| (e.value.clone_with_heap(heap), e.hash))
+            .map(|e| (e.value.clone_with_heap(heap), e.meta, e.hash))
             .collect()
     }
 
@@ -93,7 +97,7 @@ impl SetStorage {
         self.entries.iter().any(|e| matches!(e.value, Value::Ref(_)))
     }
 
-    /// Adds an element to the set, transferring ownership.
+    /// Adds an element to the set with default metadata, transferring ownership.
     ///
     /// Returns `Ok(true)` if the element was added (not already present),
     /// `Ok(false)` if the element was already in the set.
@@ -102,6 +106,23 @@ impl SetStorage {
     /// The caller transfers ownership of `value`. If the value is already in
     /// the set, it will be dropped.
     fn add(&mut self, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
+        self.add_with_meta(value, MetadataId::DEFAULT, vm)
+    }
+
+    /// Adds an element to the set with explicit metadata, transferring ownership.
+    ///
+    /// Returns `Ok(true)` if the element was added (not already present),
+    /// `Ok(false)` if the element was already in the set.
+    /// Returns `Err` if the element is unhashable.
+    ///
+    /// The caller transfers ownership of `value`. If the value is already in
+    /// the set, it will be dropped.
+    fn add_with_meta(
+        &mut self,
+        value: Value,
+        meta: MetadataId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
+    ) -> RunResult<bool> {
         let hash = match value.py_hash(vm) {
             Ok(Some(h)) => h,
             Ok(None) => {
@@ -129,10 +150,24 @@ impl SetStorage {
             // Growth unit matches SetStorage::estimate_size which uses size_of::<SetEntry>().
             vm.heap.track_growth(mem::size_of::<SetEntry>())?;
             let index = self.entries.len();
-            self.entries.push(SetEntry { value, hash });
+            self.entries.push(SetEntry { value, meta, hash });
             self.indices.insert_unique(hash, index, |&idx| self.entries[idx].hash);
             Ok(true)
         }
+    }
+
+    /// Returns the metadata for the element at the given index.
+    #[expect(dead_code, reason = "useful for index-based element metadata access")]
+    pub fn meta_at(&self, index: usize) -> MetadataId {
+        self.entries[index].meta
+    }
+
+    /// Returns an iterator over `(value, metadata)` pairs.
+    ///
+    /// Used when converting to `MontyObject` at API boundaries so per-element
+    /// metadata survives the conversion.
+    pub fn entries_with_metadata(&self) -> impl Iterator<Item = (&Value, MetadataId)> {
+        self.entries.iter().map(|e| (&e.value, e.meta))
     }
 }
 
@@ -222,7 +257,7 @@ impl<'h> HeapRead<'h, SetStorage> {
 }
 
 impl SetStorage {
-    /// Creates a deep clone with proper reference counting.
+    /// Creates a deep clone with proper reference counting, including metadata.
     fn clone_with_heap(&self, heap: &impl ContainsHeap) -> Self {
         Self {
             indices: self.indices.clone(),
@@ -231,6 +266,7 @@ impl SetStorage {
                 .iter()
                 .map(|entry| SetEntry {
                     value: entry.value.clone_with_heap(heap),
+                    meta: entry.meta,
                     hash: entry.hash,
                 })
                 .collect(),
@@ -485,7 +521,7 @@ impl SetStorage {
         Ok(())
     }
 
-    /// Estimates the memory size of this storage.
+    /// Estimates the memory size of this storage, including per-entry metadata.
     fn estimate_size(&self) -> usize {
         mem::size_of::<Self>() + self.len() * mem::size_of::<SetEntry>()
     }
@@ -539,11 +575,23 @@ impl Set {
         self.0.has_refs()
     }
 
-    /// Adds an element to the set, transferring ownership.
+    /// Adds an element to the set with default metadata, transferring ownership.
     ///
     /// Returns `Ok(true)` if added, `Ok(false)` if already present.
     pub fn add(&mut self, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<bool> {
         self.0.add(value, vm)
+    }
+
+    /// Adds an element to the set with explicit metadata, transferring ownership.
+    ///
+    /// Returns `Ok(true)` if added, `Ok(false)` if already present.
+    pub fn add_with_meta(
+        &mut self,
+        value: Value,
+        meta: MetadataId,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
+    ) -> RunResult<bool> {
+        self.0.add_with_meta(value, meta, vm)
     }
 }
 
@@ -600,6 +648,11 @@ impl Set {
         self.0.iter()
     }
 
+    /// Returns an iterator over `(value, metadata)` pairs in insertion order.
+    pub(crate) fn entries_with_metadata(&self) -> impl Iterator<Item = (&Value, MetadataId)> {
+        self.0.entries_with_metadata()
+    }
+
     /// Creates a set from the `set()` constructor call.
     ///
     /// - `set()` with no args returns an empty set
@@ -639,7 +692,7 @@ impl Set {
 }
 
 impl<'h> HeapRead<'h, Set> {
-    /// Adds an element to the set, transferring ownership.
+    /// Adds an element to the set with default metadata, transferring ownership.
     ///
     /// Returns `Ok(true)` if the element was added (not already present),
     /// `Ok(false)` if the element was already in the set (and the value is dropped).
@@ -648,6 +701,23 @@ impl<'h> HeapRead<'h, Set> {
     /// Uses a two-phase lookup (collect candidates, then compare) to avoid
     /// holding a borrow on the set storage during `py_eq` calls.
     pub fn add(&mut self, value: Value, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<bool> {
+        self.add_with_meta(value, MetadataId::DEFAULT, vm)
+    }
+
+    /// Adds an element to the set with explicit metadata, transferring ownership.
+    ///
+    /// Returns `Ok(true)` if the element was added (not already present),
+    /// `Ok(false)` if the element was already in the set (and the value is dropped).
+    /// Returns `Err` if the element is unhashable (and the value is dropped).
+    ///
+    /// Uses a two-phase lookup (collect candidates, then compare) to avoid
+    /// holding a borrow on the set storage during `py_eq` calls.
+    pub fn add_with_meta(
+        &mut self,
+        value: Value,
+        meta: MetadataId,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<bool> {
         let hash = match value.py_hash(vm) {
             Ok(Some(h)) => h,
             Ok(None) => {
@@ -688,7 +758,7 @@ impl<'h> HeapRead<'h, Set> {
         // Add new entry
         let storage = &mut self.get_mut(vm.heap).0;
         let index = storage.entries.len();
-        storage.entries.push(SetEntry { value, hash });
+        storage.entries.push(SetEntry { value, meta, hash });
         storage
             .indices
             .insert_unique(hash, index, |&idx| storage.entries[idx].hash);
@@ -715,7 +785,7 @@ impl<'h> HeapRead<'h, Set> {
 
         if let Some(entries) = entries_opt {
             other.drop_with_heap(vm);
-            for (value, _hash) in entries {
+            for (value, _meta, _hash) in entries {
                 self.add(value, vm)?;
             }
             return Ok(());
@@ -1161,6 +1231,11 @@ impl FrozenSet {
     /// Returns the internal storage.
     pub(crate) fn storage(&self) -> &SetStorage {
         &self.0
+    }
+
+    /// Returns an iterator over `(value, metadata)` pairs in insertion order.
+    pub(crate) fn entries_with_metadata(&self) -> impl Iterator<Item = (&Value, MetadataId)> {
+        self.0.entries_with_metadata()
     }
 }
 
