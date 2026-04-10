@@ -517,7 +517,7 @@ pub struct VMSnapshot {
 
     /// Parallel metadata for globals — one [`MetadataId`] per entry in `globals`.
     #[serde(default)]
-    meta_globals: Vec<MetadataId>,
+    pub(crate) meta_globals: Vec<MetadataId>,
 
     /// Parallel metadata for the exception stack.
     #[serde(default)]
@@ -525,7 +525,7 @@ pub struct VMSnapshot {
 
     /// Interning store for metadata labels and deduplication.
     #[serde(default)]
-    metadata_store: MetadataStore,
+    pub(crate) metadata_store: MetadataStore,
 }
 
 // ============================================================================
@@ -662,6 +662,43 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             meta_globals,
             meta_exception_stack: Vec::new(),
             metadata_store: MetadataStore::new(),
+            pending_arg_metadata: Vec::new(),
+        }
+    }
+
+    /// Creates a new VM with pre-populated metadata state.
+    ///
+    /// Used by `MontyRepl` to carry metadata across snippet executions. The
+    /// `meta_globals` and `metadata_store` are restored from the REPL's persistent
+    /// state, ensuring that metadata from prior snippets survives.
+    pub fn new_with_metadata(
+        globals: Vec<Value>,
+        meta_globals: Vec<MetadataId>,
+        metadata_store: MetadataStore,
+        heap: &'h mut HeapReader<'h, T>,
+        interns: &'a Interns,
+        print_writer: PrintWriter<'a>,
+    ) -> Self {
+        // Ensure meta_globals matches globals length
+        let mut meta_globals = meta_globals;
+        meta_globals.resize(globals.len(), MetadataId::DEFAULT);
+        Self {
+            stack: Vec::with_capacity(64),
+            globals,
+            frames: Vec::with_capacity(16),
+            heap,
+            interns,
+            print_writer,
+            exception_stack: Vec::new(),
+            instruction_ip: 0,
+            scheduler: Scheduler::new(),
+            ext_function_load_ip: None,
+            module_code: None,
+            json_string_cache: JsonStringCache::default(),
+            meta_stack: Vec::with_capacity(64),
+            meta_globals,
+            meta_exception_stack: Vec::new(),
+            metadata_store,
             pending_arg_metadata: Vec::new(),
         }
     }
@@ -809,11 +846,22 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
 
     /// Takes ownership of the globals vector, replacing it with an empty vec.
     ///
-    /// Used by the REPL to reclaim globals after VM execution completes,
-    /// before calling `cleanup()` (which would destroy them in ref-count-panic mode).
+    /// Used by the ref-count-return test infrastructure to inspect globals after
+    /// execution, without needing metadata.
+    #[cfg(feature = "ref-count-return")]
     pub fn take_globals(&mut self) -> Vec<Value> {
         self.meta_globals.clear();
         mem::take(&mut self.globals)
+    }
+
+    /// Takes ownership of globals, their metadata, and the metadata store.
+    ///
+    /// Used by the REPL to persist metadata across snippet executions.
+    pub fn take_globals_with_meta(&mut self) -> (Vec<Value>, Vec<MetadataId>, MetadataStore) {
+        let globals = mem::take(&mut self.globals);
+        let meta_globals = mem::take(&mut self.meta_globals);
+        let metadata_store = mem::take(&mut self.metadata_store);
+        (globals, meta_globals, metadata_store)
     }
 
     /// Allocates a new `CallId` for an external function call.

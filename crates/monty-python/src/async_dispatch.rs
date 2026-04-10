@@ -219,7 +219,7 @@ where
                     let owner = repl_owner.bind(py).get();
                     owner.put_repl(EitherRepl::from_core(repl));
                     cleanup_notifier.finish();
-                    monty_to_py(py, &value, &dc_registry)
+                    monty_to_py(py, &value.value, &dc_registry)
                 });
             }
             ReplProgress::FunctionCall(call) => {

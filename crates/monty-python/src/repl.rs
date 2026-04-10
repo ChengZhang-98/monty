@@ -26,6 +26,7 @@ use crate::{
     exceptions::{MontyError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
+    metadata::py_to_annotated,
     monty_cls::{
         CallbackStringPrint, CallbackStructuredPrint, EitherProgress, resolve_print_callback,
         unwrap_structured_callback,
@@ -352,7 +353,7 @@ struct PyReplAsyncAwaitable {
 struct ReplAsyncStart {
     repl_owner: Py<PyMontyRepl>,
     code: String,
-    input_values: Vec<(String, MontyObject)>,
+    input_values: Vec<(String, ::monty::AnnotatedObject)>,
     external_functions: Option<Py<PyDict>>,
     os: Option<Py<PyAny>>,
     dc_registry: DcRegistry,
@@ -602,7 +603,7 @@ impl PyMontyRepl {
         &self,
         py: Python<'py>,
         code: &str,
-        input_values: Vec<(String, MontyObject)>,
+        input_values: Vec<(String, ::monty::AnnotatedObject)>,
         external_functions: Option<&Bound<'_, PyDict>>,
         os_handler: Option<&OsHandler>,
         mut print_writer: PrintWriter<'_>,
@@ -654,7 +655,7 @@ impl PyMontyRepl {
         py: Python<'_>,
         repl: CoreMontyRepl<T>,
         code: &str,
-        input_values: Vec<(String, MontyObject)>,
+        input_values: Vec<(String, ::monty::AnnotatedObject)>,
         external_functions: Option<&Bound<'_, PyDict>>,
         os_handler: Option<&OsHandler>,
         print_output: &mut SendWrapper<&mut PrintWriter<'_>>,
@@ -686,7 +687,7 @@ impl PyMontyRepl {
             match progress {
                 ReplProgress::Complete { repl, value } => {
                     put_back(mount_table);
-                    return Ok((value, EitherRepl::from_core(repl)));
+                    return Ok((value.value, EitherRepl::from_core(repl)));
                 }
                 ReplProgress::FunctionCall(call) => {
                     let return_value = if call.method_call {
@@ -827,7 +828,7 @@ fn make_print_writer_from_callback(
 fn extract_repl_inputs(
     inputs: Option<&Bound<'_, PyDict>>,
     dc_registry: &DcRegistry,
-) -> PyResult<Vec<(String, MontyObject)>> {
+) -> PyResult<Vec<(String, ::monty::AnnotatedObject)>> {
     let Some(inputs) = inputs else {
         return Ok(vec![]);
     };
@@ -835,7 +836,7 @@ fn extract_repl_inputs(
         .iter()
         .map(|(key, value)| {
             let name = key.extract::<String>()?;
-            let obj = py_to_monty(&value, dc_registry)?;
+            let obj = py_to_annotated(&value, dc_registry)?;
             Ok((name, obj))
         })
         .collect::<PyResult<_>>()

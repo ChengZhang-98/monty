@@ -224,3 +224,48 @@ def test_mixed_annotated_and_plain_inputs():
     # metadata should come from the annotated input (merge with default = identity)
     assert snap.metadata is not None
     assert snap.metadata.producers == snapshot(frozenset({'src'}))
+
+
+# === MontyRepl metadata propagation ===
+
+
+def test_repl_metadata_input_passthrough():
+    """MontyRepl.feed_start with AnnotatedValue input should preserve metadata."""
+    meta = pydantic_monty.ObjectMetadata(
+        producers=frozenset({'vault'}),
+        tags=frozenset({'secret'}),
+    )
+    repl = pydantic_monty.MontyRepl(script_name='repl.py')
+    result = repl.feed_start('x', inputs={'x': pydantic_monty.AnnotatedValue(42, meta)})
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(42)
+    assert result.metadata is not None
+    assert result.metadata.producers == snapshot(frozenset({'vault'}))
+    assert result.metadata.tags == snapshot(frozenset({'secret'}))
+
+
+def test_repl_metadata_merge_on_binary_op():
+    """MontyRepl should merge metadata on binary ops just like Monty."""
+    meta_a = pydantic_monty.ObjectMetadata(producers=frozenset({'src_a'}))
+    meta_b = pydantic_monty.ObjectMetadata(producers=frozenset({'src_b'}))
+    repl = pydantic_monty.MontyRepl(script_name='repl.py')
+    result = repl.feed_start(
+        'a + b',
+        inputs={
+            'a': pydantic_monty.AnnotatedValue(10, meta_a),
+            'b': pydantic_monty.AnnotatedValue(20, meta_b),
+        },
+    )
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(30)
+    assert result.metadata is not None
+    assert result.metadata.producers == snapshot(frozenset({'src_a', 'src_b'}))
+
+
+def test_repl_no_metadata_returns_none():
+    """MontyRepl without AnnotatedValue inputs should return None metadata."""
+    repl = pydantic_monty.MontyRepl(script_name='repl.py')
+    result = repl.feed_start('1 + 2')
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(3)
+    assert result.metadata is None

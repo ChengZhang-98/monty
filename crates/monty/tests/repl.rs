@@ -4,8 +4,8 @@
 //! only the newly fed snippet each time.
 
 use monty::{
-    ExtFunctionResult, MontyException, MontyObject, MontyRepl, NoLimitTracker, PrintWriter, ReplContinuationMode,
-    ReplProgress, ReplStartError, ResourceTracker, detect_repl_continuation_mode,
+    AnnotatedObject, ExtFunctionResult, MontyException, MontyObject, MontyRepl, NoLimitTracker, PrintWriter,
+    ReplContinuationMode, ReplProgress, ReplStartError, ResourceTracker, detect_repl_continuation_mode,
 };
 
 #[test]
@@ -174,7 +174,7 @@ fn repl_start_external_call_resumes_to_updated_repl() {
 
     let progress = call.resume(MontyObject::Int(41), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
-    assert_eq!(value, MontyObject::Int(42));
+    assert_eq!(value.value, MontyObject::Int(42));
     assert_eq!(feed_run_print(&mut repl, "x = 5").unwrap(), MontyObject::None);
     assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::Int(5));
 }
@@ -194,7 +194,7 @@ fn repl_progress_dump_load_roundtrip() {
 
     let progress = call.resume(MontyObject::Int(20), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
-    assert_eq!(value, MontyObject::Int(42));
+    assert_eq!(value.value, MontyObject::Int(42));
     assert_eq!(feed_run_print(&mut repl, "z = 1").unwrap(), MontyObject::None);
     assert_eq!(feed_run_print(&mut repl, "z").unwrap(), MontyObject::Int(1));
 }
@@ -230,7 +230,7 @@ async def main():
         )
         .unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
-    assert_eq!(value, MontyObject::Int(42));
+    assert_eq!(value.value, MontyObject::Int(42));
     assert_eq!(
         feed_run_print(&mut repl, "final_value = 42").unwrap(),
         MontyObject::None
@@ -301,7 +301,11 @@ fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
     // Calling point.sum() should yield a FunctionCall with method_call=true.
     // Pass the dataclass as an input to feed_start() so it gets a namespace slot.
     let progress = repl
-        .feed_start("point.sum()", vec![("point".to_string(), point)], PrintWriter::Stdout)
+        .feed_start(
+            "point.sum()",
+            vec![("point".to_string(), AnnotatedObject::from(point))],
+            PrintWriter::Stdout,
+        )
         .unwrap();
     let call = progress.into_function_call().expect("expected method call");
 
@@ -313,7 +317,7 @@ fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
     // Resume with a return value (sum of x + y = 3)
     let progress = call.resume(MontyObject::Int(3), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
-    assert_eq!(value, MontyObject::Int(3));
+    assert_eq!(value.value, MontyObject::Int(3));
 
     // Verify REPL state is preserved after method call
     assert_eq!(feed_run_print(&mut repl, "1 + 1").unwrap(), MontyObject::Int(2));
@@ -335,9 +339,100 @@ fn repl_start_new_external_function_in_later_block() {
 
     let progress = call.resume(MontyObject::Int(100), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
-    assert_eq!(value, MontyObject::Int(100));
+    assert_eq!(value.value, MontyObject::Int(100));
 
     // REPL state from before the external call is still intact.
     assert_eq!(feed_run_print(&mut repl, "x").unwrap(), MontyObject::Int(10));
     assert_eq!(feed_run_print(&mut repl, "y").unwrap(), MontyObject::Int(15));
+}
+
+// === REPL metadata propagation tests ===
+
+use std::collections::BTreeSet;
+
+use monty::ObjectMetadata;
+
+fn meta(producers: &[&str], consumers: Option<&[&str]>, tags: &[&str]) -> ObjectMetadata {
+    ObjectMetadata {
+        producers: producers.iter().map(ToString::to_string).collect(),
+        consumers: consumers.map(|c| c.iter().map(ToString::to_string).collect()),
+        tags: tags.iter().map(ToString::to_string).collect(),
+    }
+}
+
+#[test]
+fn repl_metadata_input_passthrough() {
+    // An annotated input passed through should retain its metadata
+    let input_meta = meta(&["src"], Some(&["admin"]), &["pii"]);
+    let input = AnnotatedObject::new(MontyObject::Int(42), Some(input_meta.clone()));
+    let repl = MontyRepl::new("repl.py", NoLimitTracker);
+    let progress = repl
+        .feed_start("x", vec![("x".to_string(), input)], PrintWriter::Disabled)
+        .unwrap();
+    let (_repl, result) = progress.into_complete().expect("expected completion");
+    assert_eq!(result.value, MontyObject::Int(42));
+    assert_eq!(result.metadata, Some(input_meta));
+}
+
+#[test]
+fn repl_metadata_no_metadata_returns_none() {
+    // A plain input produces None metadata
+    let input = AnnotatedObject::from(MontyObject::Int(42));
+    let repl = MontyRepl::new("repl.py", NoLimitTracker);
+    let progress = repl
+        .feed_start("x", vec![("x".to_string(), input)], PrintWriter::Disabled)
+        .unwrap();
+    let (_repl, result) = progress.into_complete().expect("expected completion");
+    assert_eq!(result.value, MontyObject::Int(42));
+    assert_eq!(result.metadata, None);
+}
+
+#[test]
+fn repl_metadata_merge_on_binary_op() {
+    // a + b should merge metadata
+    let meta_a = meta(&["src_a"], Some(&["c1", "c2"]), &[]);
+    let meta_b = meta(&["src_b"], Some(&["c2", "c3"]), &[]);
+    let repl = MontyRepl::new("repl.py", NoLimitTracker);
+    let progress = repl
+        .feed_start(
+            "a + b",
+            vec![
+                (
+                    "a".to_string(),
+                    AnnotatedObject::new(MontyObject::Int(10), Some(meta_a)),
+                ),
+                (
+                    "b".to_string(),
+                    AnnotatedObject::new(MontyObject::Int(20), Some(meta_b)),
+                ),
+            ],
+            PrintWriter::Disabled,
+        )
+        .unwrap();
+    let (_repl, result) = progress.into_complete().expect("expected completion");
+    assert_eq!(result.value, MontyObject::Int(30));
+    let out = result.metadata.expect("merged metadata should be present");
+    assert_eq!(
+        out.producers,
+        BTreeSet::from(["src_a".to_string(), "src_b".to_string()])
+    );
+    assert_eq!(out.consumers, Some(BTreeSet::from(["c2".to_string()])));
+}
+
+#[test]
+fn repl_metadata_persists_across_snippets() {
+    // Metadata on a global should survive across multiple feed_run calls
+    let mut repl = MontyRepl::new("repl.py", NoLimitTracker);
+    let input_meta = meta(&["vault"], None, &["secret"]);
+    let input = AnnotatedObject::new(MontyObject::Int(10), Some(input_meta.clone()));
+
+    // First snippet: store annotated input
+    repl.feed_run("x", vec![("x".to_string(), input)], PrintWriter::Disabled)
+        .unwrap();
+
+    // Second snippet: use x (should carry metadata from first snippet)
+    let progress = repl.feed_start("x + 1", vec![], PrintWriter::Disabled).unwrap();
+    let (_repl, result) = progress.into_complete().expect("expected completion");
+    assert_eq!(result.value, MontyObject::Int(11));
+    assert_eq!(result.metadata, Some(input_meta));
 }

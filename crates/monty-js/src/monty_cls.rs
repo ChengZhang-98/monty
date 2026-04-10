@@ -690,7 +690,7 @@ impl MontyRepl {
                         ReplProgress::Complete { repl, value } => {
                             self.repl = Some(EitherRepl::from_core(repl));
                             put_back(mount_table);
-                            return Ok(Either::A(monty_to_js(&value, env)?));
+                            return Ok(Either::A(monty_to_js(&value.value, env)?));
                         }
                         ReplProgress::OsCall(call) => {
                             let os_result = if let Some(ref mut table) = mount_table {

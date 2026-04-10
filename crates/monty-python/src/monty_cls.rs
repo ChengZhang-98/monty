@@ -664,8 +664,7 @@ where
     match progress {
         ReplProgress::Complete { repl, value } => {
             repl_owner.get().put_repl(EitherRepl::from_core(repl));
-            // REPL path doesn't carry metadata yet — wrap as no-metadata AnnotatedObject
-            PyMontyComplete::create(py, &::monty::AnnotatedObject::from(value), &dc_registry)
+            PyMontyComplete::create(py, &value, &dc_registry)
         }
         ReplProgress::FunctionCall(call) => {
             PyFunctionSnapshot::repl_function_call(py, call, script_name, print_callback, dc_registry, repl_owner)

@@ -79,11 +79,11 @@ consumer restriction, falsely restricting access to public data.
 > "does this list contain any restricted data?" without iterating elements.
 > Not implemented yet.
 
-### Explicit data flow only
+### Explicit data flow only (for now)
 
 Metadata propagates through **value operations** (arithmetic, string
 concatenation, function call arguments/returns, container indexing, etc.) but
-**not through control flow**:
+**not yet through control flow**:
 
 ```python
 if secret_condition:     # secret_condition has metadata from "vault"
@@ -92,11 +92,12 @@ else:
     x = 2               # same — no implicit flow
 ```
 
-> **Future consideration: implicit flow tracking.** In strict information flow
-> control (IFC) systems, the program counter carries a label that taints all
-> assignments within a branch. This would catch the above case but significantly
-> increases complexity (every branch point must push/pop a PC label). Not
-> implemented; can be added if the threat model requires it.
+> **Planned change: implicit flow tracking.** Control-flow propagation will be
+> added in a future release. In strict information flow control (IFC) systems,
+> the program counter carries a label that taints all assignments within a
+> branch. This would catch the above case but increases complexity (every branch
+> point must push/pop a PC label). Will be implemented when the threat model
+> requires it.
 
 ## Architecture
 
@@ -367,7 +368,9 @@ Tests cover:
 
 - **Hybrid container metadata**: container-level metadata aggregated from
   elements for coarse-grained provenance queries
-- **Implicit flow tracking**: program counter label for control-flow tainting
+- **Implicit flow tracking** (planned): program counter label for control-flow
+  tainting — assignments inside `if`/`else`/`while` branches would inherit the
+  condition's metadata
 - **Metadata-aware builtins**: `len()`, `type()`, `isinstance()` currently
   produce `DEFAULT` metadata; some could propagate (e.g. `str()` converting
   a value should carry the value's metadata)
@@ -375,9 +378,9 @@ Tests cover:
   return `(Value, MetadataId)` for element-level tracking during `for` loops
 - **Default argument metadata**: function parameter defaults should propagate
   their metadata when the argument is not provided by the caller
-- **REPL metadata support**: `MontyRepl` does not yet support metadata
-  propagation — inputs cannot carry `AnnotatedValue`, the `MetadataStore`
-  is not persisted across REPL feed calls, and output metadata is discarded
+- **REPL sync output metadata**: `MontyRepl.feed_run` returns `MontyObject`
+  (no metadata on the output). Metadata is tracked internally and persists
+  across snippets; use `feed_start` for output metadata via `MontyComplete`
 
 ## Porting Upstream Features — Metadata Checklist
 
