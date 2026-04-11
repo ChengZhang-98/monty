@@ -30,7 +30,7 @@ use crate::{
     exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
-    metadata::{PyObjectMetadata, py_to_annotated, rust_meta_to_py},
+    metadata::{PyAnnotatedValue, PyObjectMetadata, py_to_annotated, rust_meta_to_py},
     mount::OsHandler,
     repl::{EitherRepl, FromCoreRepl, PyMontyRepl},
     serialization,
@@ -816,15 +816,20 @@ pub struct PyFunctionSnapshot {
     /// The name of the function being called.
     #[pyo3(get)]
     pub function_name: String,
-    /// The positional arguments passed to the function.
+    /// The positional arguments passed to the function (plain values).
     #[pyo3(get)]
     pub args: Py<PyTuple>,
-    /// The keyword arguments passed to the function (key, value pairs).
+    /// The keyword arguments passed to the function (plain key-value pairs).
     #[pyo3(get)]
     pub kwargs: Py<PyDict>,
     /// The unique identifier for this call
     #[pyo3(get)]
     pub call_id: u32,
+
+    /// Per-argument metadata for positional args. Each element is `ObjectMetadata | None`.
+    args_metadata: Vec<Option<::monty::ObjectMetadata>>,
+    /// Per-kwarg metadata as `(key_metadata, value_metadata)` pairs.
+    kwargs_metadata: Vec<(Option<::monty::ObjectMetadata>, Option<::monty::ObjectMetadata>)>,
 }
 
 impl PyFunctionSnapshot {
@@ -845,14 +850,24 @@ impl PyFunctionSnapshot {
         let function_name = call.function_name.clone();
         let call_id = call.call_id;
         let method_call = call.method_call;
+        let args_metadata: Vec<Option<::monty::ObjectMetadata>> =
+            call.args.iter().map(|a| a.metadata.clone()).collect();
         let items: PyResult<Vec<Py<PyAny>>> = call
             .args
             .iter()
-            .map(|item| monty_to_py(py, item, &dc_registry))
+            .map(|item| monty_to_py(py, &item.value, &dc_registry))
             .collect();
         let dict = PyDict::new(py);
+        let kwargs_metadata: Vec<(Option<::monty::ObjectMetadata>, Option<::monty::ObjectMetadata>)> = call
+            .kwargs
+            .iter()
+            .map(|(k, v)| (k.metadata.clone(), v.metadata.clone()))
+            .collect();
         for (k, v) in &call.kwargs {
-            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
+            dict.set_item(
+                monty_to_py(py, &k.value, &dc_registry)?,
+                monty_to_py(py, &v.value, &dc_registry)?,
+            )?;
         }
 
         let slf = Self {
@@ -866,6 +881,8 @@ impl PyFunctionSnapshot {
             kwargs: dict.unbind(),
             call_id,
             dc_registry,
+            args_metadata,
+            kwargs_metadata,
         };
         slf.into_bound_py_any(py)
     }
@@ -886,14 +903,24 @@ impl PyFunctionSnapshot {
     {
         let function_name = call.function.to_string();
         let call_id = call.call_id;
+        let args_metadata: Vec<Option<::monty::ObjectMetadata>> =
+            call.args.iter().map(|a| a.metadata.clone()).collect();
         let items: PyResult<Vec<Py<PyAny>>> = call
             .args
             .iter()
-            .map(|item| monty_to_py(py, item, &dc_registry))
+            .map(|item| monty_to_py(py, &item.value, &dc_registry))
             .collect();
         let dict = PyDict::new(py);
+        let kwargs_metadata: Vec<(Option<::monty::ObjectMetadata>, Option<::monty::ObjectMetadata>)> = call
+            .kwargs
+            .iter()
+            .map(|(k, v)| (k.metadata.clone(), v.metadata.clone()))
+            .collect();
         for (k, v) in &call.kwargs {
-            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
+            dict.set_item(
+                monty_to_py(py, &k.value, &dc_registry)?,
+                monty_to_py(py, &v.value, &dc_registry)?,
+            )?;
         }
 
         let slf = Self {
@@ -907,6 +934,8 @@ impl PyFunctionSnapshot {
             kwargs: dict.unbind(),
             call_id,
             dc_registry,
+            args_metadata,
+            kwargs_metadata,
         };
         slf.into_bound_py_any(py)
     }
@@ -926,14 +955,24 @@ impl PyFunctionSnapshot {
         let function_name = call.function_name.clone();
         let call_id = call.call_id;
         let method_call = call.method_call;
+        let args_metadata: Vec<Option<::monty::ObjectMetadata>> =
+            call.args.iter().map(|a| a.metadata.clone()).collect();
         let items: PyResult<Vec<Py<PyAny>>> = call
             .args
             .iter()
-            .map(|item| monty_to_py(py, item, &dc_registry))
+            .map(|item| monty_to_py(py, &item.value, &dc_registry))
             .collect();
         let dict = PyDict::new(py);
+        let kwargs_metadata: Vec<(Option<::monty::ObjectMetadata>, Option<::monty::ObjectMetadata>)> = call
+            .kwargs
+            .iter()
+            .map(|(k, v)| (k.metadata.clone(), v.metadata.clone()))
+            .collect();
         for (k, v) in &call.kwargs {
-            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
+            dict.set_item(
+                monty_to_py(py, &k.value, &dc_registry)?,
+                monty_to_py(py, &v.value, &dc_registry)?,
+            )?;
         }
 
         let slf = Self {
@@ -947,6 +986,8 @@ impl PyFunctionSnapshot {
             kwargs: dict.unbind(),
             call_id,
             dc_registry,
+            args_metadata,
+            kwargs_metadata,
         };
         slf.into_bound_py_any(py)
     }
@@ -965,14 +1006,24 @@ impl PyFunctionSnapshot {
     {
         let function_name = call.function.to_string();
         let call_id = call.call_id;
+        let args_metadata: Vec<Option<::monty::ObjectMetadata>> =
+            call.args.iter().map(|a| a.metadata.clone()).collect();
         let items: PyResult<Vec<Py<PyAny>>> = call
             .args
             .iter()
-            .map(|item| monty_to_py(py, item, &dc_registry))
+            .map(|item| monty_to_py(py, &item.value, &dc_registry))
             .collect();
         let dict = PyDict::new(py);
+        let kwargs_metadata: Vec<(Option<::monty::ObjectMetadata>, Option<::monty::ObjectMetadata>)> = call
+            .kwargs
+            .iter()
+            .map(|(k, v)| (k.metadata.clone(), v.metadata.clone()))
+            .collect();
         for (k, v) in &call.kwargs {
-            dict.set_item(monty_to_py(py, k, &dc_registry)?, monty_to_py(py, v, &dc_registry)?)?;
+            dict.set_item(
+                monty_to_py(py, &k.value, &dc_registry)?,
+                monty_to_py(py, &v.value, &dc_registry)?,
+            )?;
         }
 
         let slf = Self {
@@ -986,6 +1037,8 @@ impl PyFunctionSnapshot {
             kwargs: dict.unbind(),
             call_id,
             dc_registry,
+            args_metadata,
+            kwargs_metadata,
         };
         slf.into_bound_py_any(py)
     }
@@ -1007,6 +1060,8 @@ impl PyFunctionSnapshot {
         kwargs: Py<PyDict>,
         call_id: u32,
     ) -> PyResult<Bound<'_, PyAny>> {
+        let args_len = args.bind(py).len();
+        let kwargs_len = kwargs.bind(py).len();
         let slf = Self {
             snapshot: Mutex::new(snapshot),
             print_callback,
@@ -1018,6 +1073,10 @@ impl PyFunctionSnapshot {
             args,
             kwargs,
             call_id,
+            // Deserialized snapshots don't carry per-arg metadata in the outer fields
+            // (the inner FunctionCall does, but those are opaque to the Python layer).
+            args_metadata: vec![None; args_len],
+            kwargs_metadata: vec![(None, None); kwargs_len],
         };
         slf.into_bound_py_any(py)
     }
@@ -1145,6 +1204,47 @@ impl PyFunctionSnapshot {
             &self.dc_registry,
         )?;
         Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Positional arguments with metadata, as a tuple of `AnnotatedValue` objects.
+    ///
+    /// Each `AnnotatedValue` bundles the argument value with its provenance metadata.
+    /// This mirrors the `AnnotatedValue` input format used by `Monty.run()` / `Monty.start()`.
+    #[getter]
+    fn annotated_args<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyTuple>> {
+        let args_bound = self.args.bind(py);
+        let items: PyResult<Vec<Py<PyAny>>> = args_bound
+            .iter()
+            .zip(&self.args_metadata)
+            .map(|(value, meta)| {
+                let meta_py = match meta {
+                    Some(m) => rust_meta_to_py(py, m)?,
+                    None => Py::new(py, PyObjectMetadata::new(py, None, None, None)?)?,
+                };
+                Py::new(py, PyAnnotatedValue::new(value.unbind(), meta_py)).map(Py::into_any)
+            })
+            .collect();
+        PyTuple::new(py, items?)
+    }
+
+    /// Keyword arguments with metadata, as a dict of `str → AnnotatedValue`.
+    ///
+    /// Each value in the dict is an `AnnotatedValue` bundling the kwarg value with
+    /// its provenance metadata. Key metadata is not exposed (keys are string literals
+    /// with no meaningful provenance).
+    #[getter]
+    fn annotated_kwargs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        let kwargs_bound = self.kwargs.bind(py);
+        for ((k, v), (_k_meta, v_meta)) in kwargs_bound.iter().zip(&self.kwargs_metadata) {
+            let meta_py = match v_meta {
+                Some(m) => rust_meta_to_py(py, m)?,
+                None => Py::new(py, PyObjectMetadata::new(py, None, None, None)?)?,
+            };
+            let annotated = Py::new(py, PyAnnotatedValue::new(v.unbind(), meta_py))?;
+            dict.set_item(&k, annotated)?;
+        }
+        Ok(dict)
     }
 
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
@@ -1975,13 +2075,16 @@ pub(crate) fn call_os_callback<T: ResourceTracker>(
     let py_args: Vec<Py<PyAny>> = call
         .args
         .iter()
-        .map(|arg| monty_to_py(py, arg, dc_registry))
+        .map(|arg| monty_to_py(py, &arg.value, dc_registry))
         .collect::<PyResult<_>>()?;
     let py_args_tuple = PyTuple::new(py, py_args)?;
 
     let py_kwargs = PyDict::new(py);
     for (k, v) in &call.kwargs {
-        py_kwargs.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
+        py_kwargs.set_item(
+            monty_to_py(py, &k.value, dc_registry)?,
+            monty_to_py(py, &v.value, dc_registry)?,
+        )?;
     }
 
     match callback.call1((call.function.to_string(), py_args_tuple, py_kwargs)) {

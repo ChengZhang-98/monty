@@ -4,7 +4,7 @@
 //! External functions are registered by name and called when Monty execution
 //! reaches a call to that function.
 
-use ::monty::{ExtFunctionResult, MontyObject};
+use ::monty::{AnnotatedObject, ExtFunctionResult, MontyObject};
 use pyo3::{
     exceptions::PyRuntimeError,
     prelude::*,
@@ -28,8 +28,8 @@ use crate::{
 pub fn dispatch_method_call(
     py: Python<'_>,
     function_name: &str,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &[AnnotatedObject],
+    kwargs: &[(AnnotatedObject, AnnotatedObject)],
     dc_registry: &DcRegistry,
 ) -> ExtFunctionResult {
     match dispatch_method_call_inner(py, function_name, args, kwargs, dc_registry) {
@@ -42,8 +42,8 @@ pub fn dispatch_method_call(
 fn dispatch_method_call_inner(
     py: Python<'_>,
     function_name: &str,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &[AnnotatedObject],
+    kwargs: &[(AnnotatedObject, AnnotatedObject)],
     dc_registry: &DcRegistry,
 ) -> PyResult<MontyObject> {
     // First arg is the dataclass self
@@ -51,7 +51,7 @@ fn dispatch_method_call_inner(
     let self_obj = args_iter
         .next()
         .ok_or_else(|| PyRuntimeError::new_err("Method call missing self argument"))?;
-    let py_self = monty_to_py(py, self_obj, dc_registry)?;
+    let py_self = monty_to_py(py, &self_obj.value, dc_registry)?;
 
     // Get the method from the object
     let method = py_self.bind(py).getattr(function_name)?;
@@ -60,7 +60,8 @@ fn dispatch_method_call_inner(
         method.call0()?
     } else {
         // Convert remaining positional arguments
-        let remaining_args: PyResult<Vec<Py<PyAny>>> = args_iter.map(|arg| monty_to_py(py, arg, dc_registry)).collect();
+        let remaining_args: PyResult<Vec<Py<PyAny>>> =
+            args_iter.map(|arg| monty_to_py(py, &arg.value, dc_registry)).collect();
         let py_args_tuple = PyTuple::new(py, remaining_args?)?;
 
         // Call the method
@@ -70,8 +71,8 @@ fn dispatch_method_call_inner(
             // Convert keyword arguments
             let py_kwargs = PyDict::new(py);
             for (key, value) in kwargs {
-                let py_key = monty_to_py(py, key, dc_registry)?;
-                let py_value = monty_to_py(py, value, dc_registry)?;
+                let py_key = monty_to_py(py, &key.value, dc_registry)?;
+                let py_value = monty_to_py(py, &value.value, dc_registry)?;
                 py_kwargs.set_item(py_key, py_value)?;
             }
             Some(py_kwargs)
@@ -114,8 +115,8 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
     pub fn call(
         &self,
         function_name: &str,
-        args: &[MontyObject],
-        kwargs: &[(MontyObject, MontyObject)],
+        args: &[AnnotatedObject],
+        kwargs: &[(AnnotatedObject, AnnotatedObject)],
     ) -> ExtFunctionResult {
         match self.call_inner(function_name, args, kwargs) {
             Ok(Some(result)) => ExtFunctionResult::Return(result, None),
@@ -128,8 +129,8 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
     fn call_inner(
         &self,
         function_name: &str,
-        args: &[MontyObject],
-        kwargs: &[(MontyObject, MontyObject)],
+        args: &[AnnotatedObject],
+        kwargs: &[(AnnotatedObject, AnnotatedObject)],
     ) -> PyResult<Option<MontyObject>> {
         // Look up the callable
         let Some(callable) = self.functions.get_item(function_name)? else {
@@ -139,7 +140,7 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
         // Convert positional arguments to Python objects
         let py_args: PyResult<Vec<Py<PyAny>>> = args
             .iter()
-            .map(|arg| monty_to_py(self.py, arg, self.dc_registry))
+            .map(|arg| monty_to_py(self.py, &arg.value, self.dc_registry))
             .collect();
         let py_args_tuple = PyTuple::new(self.py, py_args?)?;
 
@@ -147,8 +148,8 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
         let py_kwargs = PyDict::new(self.py);
         for (key, value) in kwargs {
             // Keys in kwargs should be strings
-            let py_key = monty_to_py(self.py, key, self.dc_registry)?;
-            let py_value = monty_to_py(self.py, value, self.dc_registry)?;
+            let py_key = monty_to_py(self.py, &key.value, self.dc_registry)?;
+            let py_value = monty_to_py(self.py, &value.value, self.dc_registry)?;
             py_kwargs.set_item(py_key, py_value)?;
         }
 
@@ -172,8 +173,8 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
     pub fn call_or_coroutine(
         &self,
         function_name: &str,
-        args: &[MontyObject],
-        kwargs: &[(MontyObject, MontyObject)],
+        args: &[AnnotatedObject],
+        kwargs: &[(AnnotatedObject, AnnotatedObject)],
     ) -> CallResult {
         match self.call_inner_raw(function_name, args, kwargs) {
             Ok(Some(result)) => result_to_call_result(self.py, &result, self.dc_registry),
@@ -186,8 +187,8 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
     fn call_inner_raw<'b>(
         &self,
         function_name: &str,
-        args: &[MontyObject],
-        kwargs: &[(MontyObject, MontyObject)],
+        args: &[AnnotatedObject],
+        kwargs: &[(AnnotatedObject, AnnotatedObject)],
     ) -> PyResult<Option<Bound<'b, PyAny>>>
     where
         'py: 'b,
@@ -198,14 +199,14 @@ impl<'a, 'py> ExternalFunctionRegistry<'a, 'py> {
 
         let py_args: PyResult<Vec<Py<PyAny>>> = args
             .iter()
-            .map(|arg| monty_to_py(self.py, arg, self.dc_registry))
+            .map(|arg| monty_to_py(self.py, &arg.value, self.dc_registry))
             .collect();
         let py_args_tuple = PyTuple::new(self.py, py_args?)?;
 
         let py_kwargs = PyDict::new(self.py);
         for (key, value) in kwargs {
-            let py_key = monty_to_py(self.py, key, self.dc_registry)?;
-            let py_value = monty_to_py(self.py, value, self.dc_registry)?;
+            let py_key = monty_to_py(self.py, &key.value, self.dc_registry)?;
+            let py_value = monty_to_py(self.py, &value.value, self.dc_registry)?;
             py_kwargs.set_item(py_key, py_value)?;
         }
 
@@ -241,8 +242,8 @@ pub enum CallResult {
 pub fn dispatch_method_call_or_coroutine(
     py: Python<'_>,
     function_name: &str,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &[AnnotatedObject],
+    kwargs: &[(AnnotatedObject, AnnotatedObject)],
     dc_registry: &DcRegistry,
 ) -> CallResult {
     match dispatch_method_call_inner_raw(py, function_name, args, kwargs, dc_registry) {
@@ -255,22 +256,23 @@ pub fn dispatch_method_call_or_coroutine(
 fn dispatch_method_call_inner_raw<'py>(
     py: Python<'py>,
     function_name: &str,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &[AnnotatedObject],
+    kwargs: &[(AnnotatedObject, AnnotatedObject)],
     dc_registry: &DcRegistry,
 ) -> PyResult<Bound<'py, PyAny>> {
     let mut args_iter = args.iter();
     let self_obj = args_iter
         .next()
         .ok_or_else(|| PyRuntimeError::new_err("Method call missing self argument"))?;
-    let py_self = monty_to_py(py, self_obj, dc_registry)?;
+    let py_self = monty_to_py(py, &self_obj.value, dc_registry)?;
 
     let method = py_self.bind(py).getattr(function_name)?;
 
     if args.len() == 1 && kwargs.is_empty() {
         method.call0()
     } else {
-        let remaining_args: PyResult<Vec<Py<PyAny>>> = args_iter.map(|arg| monty_to_py(py, arg, dc_registry)).collect();
+        let remaining_args: PyResult<Vec<Py<PyAny>>> =
+            args_iter.map(|arg| monty_to_py(py, &arg.value, dc_registry)).collect();
         let py_args_tuple = PyTuple::new(py, remaining_args?)?;
 
         let py_kwargs = if kwargs.is_empty() {
@@ -278,8 +280,8 @@ fn dispatch_method_call_inner_raw<'py>(
         } else {
             let py_kwargs = PyDict::new(py);
             for (key, value) in kwargs {
-                let py_key = monty_to_py(py, key, dc_registry)?;
-                let py_value = monty_to_py(py, value, dc_registry)?;
+                let py_key = monty_to_py(py, &key.value, dc_registry)?;
+                let py_value = monty_to_py(py, &value.value, dc_registry)?;
                 py_kwargs.set_item(py_key, py_value)?;
             }
             Some(py_kwargs)

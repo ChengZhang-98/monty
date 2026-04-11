@@ -58,7 +58,7 @@ fn run_to_oscall(code: &str) -> (OsFunction, Vec<MontyObject>) {
                 }),
             };
             let function = call.function;
-            let args = call.args.clone();
+            let args = call.args.iter().map(|a| a.value.clone()).collect();
             let _ = call.resume(mock_result, PrintWriter::Stdout);
             (function, args)
         }
@@ -76,7 +76,7 @@ fn run_oscall_with_result(code: &str, mock_result: MontyObject) -> (OsFunction, 
     match progress {
         RunProgress::OsCall(call) => {
             let function = call.function;
-            let args = call.args.clone();
+            let args = call.args.iter().map(|a| a.value.clone()).collect();
             let resumed = call.resume(mock_result, PrintWriter::Stdout).unwrap();
             let final_result = resumed.into_complete().expect("expected Complete after resume");
             (function, args, final_result.value)

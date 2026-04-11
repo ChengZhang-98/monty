@@ -5,7 +5,7 @@
 //! requests instead of indexing into `MontyObject` arrays or re-parsing kwargs.
 
 use super::{common::MountContext, direct, error::MountError, mount_mode::MountMode, overlay};
-use crate::{MontyObject, os::OsFunction};
+use crate::{MontyObject, metadata::AnnotatedObject, os::OsFunction};
 
 /// Parsed filesystem request passed to the direct or overlay backend.
 #[derive(Clone, Copy, Debug)]
@@ -105,8 +105,8 @@ impl<'a> FsRequest<'a> {
 /// once we have https://github.com/pydantic/monty/issues/294
 pub(super) fn parse_fs_request<'a>(
     function: OsFunction,
-    args: &'a [MontyObject],
-    kwargs: &'a [(MontyObject, MontyObject)],
+    args: &'a [AnnotatedObject],
+    kwargs: &'a [(AnnotatedObject, AnnotatedObject)],
 ) -> Result<FsRequest<'a>, MountError> {
     let path = parse_primary_path(args)?;
     let extra_args = &args[1..];
@@ -165,8 +165,8 @@ pub(super) fn execute(
 }
 
 /// Extracts the first path argument from a raw OS call.
-fn parse_primary_path(args: &[MontyObject]) -> Result<&str, MountError> {
-    match args.first() {
+fn parse_primary_path(args: &[AnnotatedObject]) -> Result<&str, MountError> {
+    match args.first().map(|a| &a.value) {
         Some(MontyObject::Path(path)) => Ok(path.as_str()),
         Some(MontyObject::String(path)) => Ok(path.as_str()),
         _ => Err(MountError::InvalidMount(
@@ -176,8 +176,8 @@ fn parse_primary_path(args: &[MontyObject]) -> Result<&str, MountError> {
 }
 
 /// Extracts the string payload for `Path.write_text`.
-fn parse_string_data<'a>(extra_args: &'a [MontyObject], op_name: &str) -> Result<&'a str, MountError> {
-    match extra_args.first() {
+fn parse_string_data<'a>(extra_args: &'a [AnnotatedObject], op_name: &str) -> Result<&'a str, MountError> {
+    match extra_args.first().map(|a| &a.value) {
         Some(MontyObject::String(data)) => Ok(data.as_str()),
         Some(arg) => Err(MountError::InvalidMount(format!(
             "data must be str, not {}",
@@ -190,8 +190,8 @@ fn parse_string_data<'a>(extra_args: &'a [MontyObject], op_name: &str) -> Result
 }
 
 /// Extracts the bytes payload for `Path.write_bytes`.
-fn parse_bytes_data<'a>(extra_args: &'a [MontyObject], op_name: &str) -> Result<&'a [u8], MountError> {
-    match extra_args.first() {
+fn parse_bytes_data<'a>(extra_args: &'a [AnnotatedObject], op_name: &str) -> Result<&'a [u8], MountError> {
+    match extra_args.first().map(|a| &a.value) {
         Some(MontyObject::Bytes(data)) => Ok(data.as_slice()),
         Some(arg) => Err(MountError::InvalidMount(format!(
             "memoryview: a bytes-like object is required, not '{}'",
@@ -204,8 +204,8 @@ fn parse_bytes_data<'a>(extra_args: &'a [MontyObject], op_name: &str) -> Result<
 }
 
 /// Extracts a path-like argument such as `Path.rename(dst)`.
-fn parse_path_arg<'a>(extra_args: &'a [MontyObject], op_name: &str) -> Result<&'a str, MountError> {
-    match extra_args.first() {
+fn parse_path_arg<'a>(extra_args: &'a [AnnotatedObject], op_name: &str) -> Result<&'a str, MountError> {
+    match extra_args.first().map(|a| &a.value) {
         Some(MontyObject::Path(path)) => Ok(path.as_str()),
         Some(MontyObject::String(path)) => Ok(path.as_str()),
         _ => Err(MountError::InvalidMount(format!("{op_name}: expected path argument"))),
@@ -213,12 +213,12 @@ fn parse_path_arg<'a>(extra_args: &'a [MontyObject], op_name: &str) -> Result<&'
 }
 
 /// Extracts the supported keyword arguments for `Path.mkdir`.
-fn parse_mkdir_kwargs(kwargs: &[(MontyObject, MontyObject)]) -> (bool, bool) {
+fn parse_mkdir_kwargs(kwargs: &[(AnnotatedObject, AnnotatedObject)]) -> (bool, bool) {
     let mut parents = false;
     let mut exist_ok = false;
 
     for (key, value) in kwargs {
-        if let (MontyObject::String(name), MontyObject::Bool(flag)) = (key, value) {
+        if let (MontyObject::String(name), MontyObject::Bool(flag)) = (&key.value, &value.value) {
             match name.as_str() {
                 "parents" => parents = *flag,
                 "exist_ok" => exist_ok = *flag,

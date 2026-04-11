@@ -118,11 +118,17 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     ) -> Result<CallResult, RunError> {
         let kw_count = kwname_ids.len();
 
-        // Pop keyword values (TOS is last kwarg value)
-        let kw_values = self.pop_n(kw_count);
+        // Pop keyword values with metadata (TOS is last kwarg value)
+        let (kw_values, kw_meta) = self.pop_n_with_meta(kw_count);
 
-        // Pop positional arguments
-        let pos_args = self.pop_n(pos_count);
+        // Pop positional arguments with metadata
+        let (pos_args, pos_meta) = self.pop_n_with_meta(pos_count);
+
+        // Store metadata for into_annotated_objects / call_sync_function
+        self.pending_arg_metadata.clear();
+        self.pending_arg_metadata.extend(pos_meta);
+        self.pending_kwarg_metadata.clear();
+        self.pending_kwarg_metadata.extend(kw_meta);
 
         // Pop the callable
         let callable = self.pop();
@@ -170,11 +176,17 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     ) -> Result<CallResult, RunError> {
         let kw_count = kwname_ids.len();
 
-        // Pop keyword values (TOS is last kwarg value)
-        let kw_values = self.pop_n(kw_count);
+        // Pop keyword values with metadata (TOS is last kwarg value)
+        let (kw_values, kw_meta) = self.pop_n_with_meta(kw_count);
 
-        // Pop positional arguments
-        let pos_args = self.pop_n(pos_count);
+        // Pop positional arguments with metadata
+        let (pos_args, pos_meta) = self.pop_n_with_meta(pos_count);
+
+        // Store metadata for into_annotated_objects / call_sync_function
+        self.pending_arg_metadata.clear();
+        self.pending_arg_metadata.extend(pos_meta);
+        self.pending_kwarg_metadata.clear();
+        self.pending_kwarg_metadata.extend(kw_meta);
 
         // Pop the object
         let obj = self.pop();
@@ -242,8 +254,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
     /// Pops n arguments from the stack and wraps them in `ArgValues`.
     fn pop_n_args(&mut self, n: usize) -> ArgValues {
         // Capture argument metadata before popping — stored in pending_arg_metadata
-        // for call_sync_function to read when building the callee's namespace.
+        // for call_sync_function to read when building the callee's namespace,
+        // or for into_annotated_objects to read when yielding to an external call.
         self.pending_arg_metadata.clear();
+        self.pending_kwarg_metadata.clear();
         if n > 0 {
             let start = self.meta_stack.len() - n;
             self.pending_arg_metadata.extend_from_slice(&self.meta_stack[start..]);
@@ -433,9 +447,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Extract positional args and their per-element metadata from tuple
         let (copied_args, arg_meta) = this.extract_args_tuple_with_meta(args_tuple);
 
-        // Populate pending_arg_metadata so call_sync_function can apply it
+        // Populate pending_arg_metadata so call_sync_function / into_annotated_objects
+        // can apply it. Clear pending_kwarg_metadata since Dict carries its own metadata.
         this.pending_arg_metadata.clear();
         this.pending_arg_metadata.extend(arg_meta);
+        this.pending_kwarg_metadata.clear();
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {
@@ -464,9 +480,11 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         // Extract positional args and their per-element metadata from tuple
         let (copied_args, arg_meta) = this.extract_args_tuple_with_meta(args_tuple);
 
-        // Populate pending_arg_metadata so call_sync_function can apply it
+        // Populate pending_arg_metadata so call_sync_function / into_annotated_objects
+        // can apply it. Clear pending_kwarg_metadata since Dict carries its own metadata.
         this.pending_arg_metadata.clear();
         this.pending_arg_metadata.extend(arg_meta);
+        this.pending_kwarg_metadata.clear();
 
         // Build ArgValues from positional args and optional kwargs
         let args = if let Some(kwargs_ref) = kwargs {

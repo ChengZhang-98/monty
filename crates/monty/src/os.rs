@@ -10,7 +10,9 @@
 //! I/O, filesystem, or network operations. Instead, the host decides whether to
 //! permit and execute such operations.
 
-use crate::{ExcType, MontyException, MontyObject, intern::StaticStrings, types::str::StringRepr};
+use crate::{
+    ExcType, MontyException, MontyObject, intern::StaticStrings, metadata::AnnotatedObject, types::str::StringRepr,
+};
 
 /// OS operations that require host system access.
 ///
@@ -134,9 +136,9 @@ impl OsFunction {
     /// Non-filesystem operations return `RuntimeError` indicating the function
     /// isn't supported.
     #[must_use]
-    pub fn on_no_handler(&self, args: &[MontyObject]) -> MontyException {
+    pub fn on_no_handler(&self, args: &[AnnotatedObject]) -> MontyException {
         if self.is_filesystem() {
-            let path = args.first().map_or("<unknown>", |a| match a {
+            let path = args.first().map_or("<unknown>", |a| match &a.value {
                 MontyObject::Path(p) => p.as_str(),
                 MontyObject::String(s) => s.as_str(),
                 _ => "<unknown>",

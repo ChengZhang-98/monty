@@ -11,7 +11,7 @@
 //! - Multiple distinct names each get their own lookup
 //! - Builtins bypass the `NameLookup` mechanism entirely
 
-use monty::{MontyObject, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter, RunProgress};
+use monty::{AnnotatedObject, MontyObject, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter, RunProgress};
 
 /// Helper: drives execution through consecutive `NameLookup` yields,
 /// resolving each by calling `resolver(name)`.
@@ -57,7 +57,7 @@ fn resolve_as_function_and_call() {
     // Should now be at a FunctionCall for ext(10)
     let call = progress.into_function_call().expect("expected FunctionCall");
     assert_eq!(call.function_name, "ext");
-    assert_eq!(call.args, vec![MontyObject::Int(10)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(10))]);
 
     // Resume with 42 → code evaluates 42 + 1 = 43
     let result = call.resume(MontyObject::Int(42), PrintWriter::Stdout).unwrap();
@@ -232,7 +232,7 @@ fn resolved_name_is_cached() {
             RunProgress::FunctionCall(call) => {
                 assert_eq!(call.function_name, "ext");
                 call_count += 1;
-                let val: i64 = (&call.args[0]).try_into().unwrap();
+                let val: i64 = (&call.args[0].value).try_into().unwrap();
                 progress = call.resume(MontyObject::Int(val * 10), PrintWriter::Stdout).unwrap();
             }
             RunProgress::Complete(monty::AnnotatedObject { value: result, .. }) => {
@@ -293,7 +293,7 @@ fn multiple_names_each_looked_up() {
         match progress {
             RunProgress::FunctionCall(call) => {
                 called_names.push(call.function_name.clone());
-                let val: i64 = (&call.args[0]).try_into().unwrap();
+                let val: i64 = (&call.args[0].value).try_into().unwrap();
                 progress = call.resume(MontyObject::Int(val * 100), PrintWriter::Stdout).unwrap();
             }
             RunProgress::Complete(monty::AnnotatedObject { value: result, .. }) => {
@@ -333,7 +333,7 @@ fn mixed_function_and_constant_lookups() {
             RunProgress::FunctionCall(call) => {
                 // ext goes directly to FunctionCall via LoadGlobalCallable
                 assert_eq!(call.function_name, "ext");
-                assert_eq!(call.args, vec![MontyObject::Int(100)]);
+                assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(100))]);
                 progress = call.resume(MontyObject::Int(999), PrintWriter::Stdout).unwrap();
             }
             RunProgress::Complete(monty::AnnotatedObject { value: result, .. }) => {
@@ -404,7 +404,7 @@ fn input_function_no_lookup() {
         .into_function_call()
         .expect("expected FunctionCall, not NameLookup");
     assert_eq!(call.function_name, "my_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(10)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(10))]);
 
     let result = call.resume(MontyObject::Int(99), PrintWriter::Stdout).unwrap();
     assert_eq!(result.into_complete().unwrap().value, MontyObject::Int(99));
@@ -437,7 +437,7 @@ fn input_function_reassigned_then_called() {
         .into_function_call()
         .expect("expected FunctionCall, not NameLookup");
     assert_eq!(call.function_name, "my_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(5)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(5))]);
 
     let result = call.resume(MontyObject::Int(50), PrintWriter::Stdout).unwrap();
     assert_eq!(result.into_complete().unwrap().value, MontyObject::Int(50));
@@ -471,7 +471,7 @@ fn input_function_with_looked_up_arg() {
     // Now should be at FunctionCall for my_fn(42)
     let call = progress.into_function_call().expect("expected FunctionCall");
     assert_eq!(call.function_name, "my_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(42)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(42))]);
 
     let result = call.resume(MontyObject::Int(100), PrintWriter::Stdout).unwrap();
     assert_eq!(result.into_complete().unwrap().value, MontyObject::Int(100));

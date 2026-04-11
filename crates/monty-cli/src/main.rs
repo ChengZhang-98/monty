@@ -545,8 +545,8 @@ fn run_until_complete(
 /// `MontyObject` or an exception for errors / unsupported operations.
 fn handle_os_call(
     function: monty::OsFunction,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &[AnnotatedObject],
+    kwargs: &[(AnnotatedObject, AnnotatedObject)],
     mount_table: &mut Option<MountTable>,
 ) -> monty::ExtFunctionResult {
     if let Some(mounts) = mount_table.as_mut() {
@@ -567,7 +567,7 @@ fn handle_os_call(
 ///
 /// Returns a runtime-like error string for unknown function names, wrong arity,
 /// or incorrect argument types.
-fn resolve_external_call(function_name: &str, args: &[MontyObject]) -> Result<MontyObject, String> {
+fn resolve_external_call(function_name: &str, args: &[AnnotatedObject]) -> Result<MontyObject, String> {
     if function_name != "add_ints" {
         return Err(format!("unknown external function: {function_name}({args:?})"));
     }
@@ -576,7 +576,7 @@ fn resolve_external_call(function_name: &str, args: &[MontyObject]) -> Result<Mo
         return Err(format!("add_ints requires exactly 2 arguments, got {}", args.len()));
     }
 
-    if let (MontyObject::Int(a), MontyObject::Int(b)) = (&args[0], &args[1]) {
+    if let (MontyObject::Int(a), MontyObject::Int(b)) = (&args[0].value, &args[1].value) {
         Ok(MontyObject::Int(a + b))
     } else {
         Err(format!("add_ints requires integer arguments, got {args:?}"))

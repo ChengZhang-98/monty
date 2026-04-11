@@ -11,8 +11,8 @@
 use std::mem::drop;
 
 use monty::{
-    ExcType, ExtFunctionResult, MontyException, MontyObject, MontyRepl, NameLookupResult, OsFunction, PrintWriter,
-    ReplProgress, ReplStartError, ResourceTracker, RunProgress,
+    AnnotatedObject, ExcType, ExtFunctionResult, MontyException, MontyObject, MontyRepl, NameLookupResult, OsFunction,
+    PrintWriter, ReplProgress, ReplStartError, ResourceTracker, RunProgress,
 };
 use pyo3::{
     exceptions::PyRuntimeError,
@@ -337,8 +337,8 @@ pub(crate) fn with_print_writer<R>(print_callback: Option<Py<PyAny>>, f: impl Fn
 fn dispatch_function_call(
     function_name: &str,
     method_call: bool,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &[AnnotatedObject],
+    kwargs: &[(AnnotatedObject, AnnotatedObject)],
     external_functions: Option<&Py<PyDict>>,
     dc_registry: &DcRegistry,
 ) -> CallResult {
@@ -361,8 +361,8 @@ fn dispatch_function_call(
 /// and converts the result back to `ExtFunctionResult`.
 fn dispatch_os_call_py(
     function: OsFunction,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &[AnnotatedObject],
+    kwargs: &[(AnnotatedObject, AnnotatedObject)],
     os: Option<&Py<PyAny>>,
     dc_registry: &DcRegistry,
 ) -> ExtFunctionResult {
@@ -375,7 +375,10 @@ fn dispatch_os_call_py(
             .into();
         };
 
-        let py_args: Result<Vec<Py<PyAny>>, _> = args.iter().map(|arg| monty_to_py(py, arg, dc_registry)).collect();
+        let py_args: Result<Vec<Py<PyAny>>, _> = args
+            .iter()
+            .map(|arg| monty_to_py(py, &arg.value, dc_registry))
+            .collect();
         let py_args = match py_args {
             Ok(a) => a,
             Err(err) => return ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
@@ -387,11 +390,11 @@ fn dispatch_os_call_py(
 
         let py_kwargs = PyDict::new(py);
         for (k, v) in kwargs {
-            let py_key = match monty_to_py(py, k, dc_registry) {
+            let py_key = match monty_to_py(py, &k.value, dc_registry) {
                 Ok(k) => k,
                 Err(err) => return ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
             };
-            let py_value = match monty_to_py(py, v, dc_registry) {
+            let py_value = match monty_to_py(py, &v.value, dc_registry) {
                 Ok(v) => v,
                 Err(err) => return ExtFunctionResult::Error(exc_py_to_monty(py, &err)),
             };
