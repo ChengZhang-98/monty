@@ -20,7 +20,7 @@ use pyo3::{
     exceptions::{self},
     prelude::*,
     sync::PyOnceLock,
-    types::{PyDict, PyList, PyString},
+    types::{PyDict, PyList, PyString, PyType},
 };
 
 use crate::dataclass::get_frozen_instance_error;
@@ -428,6 +428,65 @@ pub fn exc_monty_to_py(py: Python<'_>, exc: MontyException) -> PyErr {
                 exceptions::PyRuntimeError::new_err(msg)
             }
         }
+    }
+}
+
+/// Returns the Python exception **type object** for a given `ExcType`.
+///
+/// Unlike `exc_monty_to_py` which creates an exception *instance* (a `PyErr`),
+/// this returns the class itself (e.g. `ValueError` not `ValueError("msg")`).
+/// Used when converting `MontyObject::Type(Type::Exception(..))` back to Python
+/// so that `type(ValueError())` returns the `ValueError` class, not a string.
+pub fn exc_type_to_py_type(py: Python<'_>, exc_type: ExcType) -> Bound<'_, PyType> {
+    match exc_type {
+        ExcType::Exception => py.get_type::<exceptions::PyException>(),
+        ExcType::BaseException => py.get_type::<exceptions::PyBaseException>(),
+        ExcType::SystemExit => py.get_type::<exceptions::PySystemExit>(),
+        ExcType::KeyboardInterrupt => py.get_type::<exceptions::PyKeyboardInterrupt>(),
+        ExcType::ArithmeticError => py.get_type::<exceptions::PyArithmeticError>(),
+        ExcType::OverflowError => py.get_type::<exceptions::PyOverflowError>(),
+        ExcType::ZeroDivisionError => py.get_type::<exceptions::PyZeroDivisionError>(),
+        ExcType::LookupError => py.get_type::<exceptions::PyLookupError>(),
+        ExcType::IndexError => py.get_type::<exceptions::PyIndexError>(),
+        ExcType::KeyError => py.get_type::<exceptions::PyKeyError>(),
+        ExcType::RuntimeError => py.get_type::<exceptions::PyRuntimeError>(),
+        ExcType::NotImplementedError => py.get_type::<exceptions::PyNotImplementedError>(),
+        ExcType::RecursionError => py.get_type::<exceptions::PyRecursionError>(),
+        ExcType::AssertionError => py.get_type::<exceptions::PyAssertionError>(),
+        ExcType::AttributeError => py.get_type::<exceptions::PyAttributeError>(),
+        ExcType::FrozenInstanceError => get_frozen_instance_error(py).map_or_else(
+            |_| py.get_type::<exceptions::PyAttributeError>(),
+            |cls| {
+                cls.cast::<PyType>()
+                    .expect("FrozenInstanceError should be a type")
+                    .clone()
+            },
+        ),
+        ExcType::MemoryError => py.get_type::<exceptions::PyMemoryError>(),
+        ExcType::NameError => py.get_type::<exceptions::PyNameError>(),
+        ExcType::UnboundLocalError => py.get_type::<exceptions::PyUnboundLocalError>(),
+        ExcType::StopIteration => py.get_type::<exceptions::PyStopIteration>(),
+        ExcType::SyntaxError => py.get_type::<exceptions::PySyntaxError>(),
+        ExcType::TimeoutError => py.get_type::<exceptions::PyTimeoutError>(),
+        ExcType::TypeError => py.get_type::<exceptions::PyTypeError>(),
+        ExcType::ValueError => py.get_type::<exceptions::PyValueError>(),
+        ExcType::UnicodeDecodeError => py.get_type::<exceptions::PyUnicodeDecodeError>(),
+        ExcType::JsonDecodeError => get_json_decode_error(py).map_or_else(
+            |_| py.get_type::<exceptions::PyValueError>(),
+            |cls| cls.cast::<PyType>().expect("JSONDecodeError should be a type").clone(),
+        ),
+        ExcType::ImportError => py.get_type::<exceptions::PyImportError>(),
+        ExcType::ModuleNotFoundError => py.get_type::<exceptions::PyModuleNotFoundError>(),
+        ExcType::OSError => py.get_type::<exceptions::PyOSError>(),
+        ExcType::FileNotFoundError => py.get_type::<exceptions::PyFileNotFoundError>(),
+        ExcType::FileExistsError => py.get_type::<exceptions::PyFileExistsError>(),
+        ExcType::IsADirectoryError => py.get_type::<exceptions::PyIsADirectoryError>(),
+        ExcType::NotADirectoryError => py.get_type::<exceptions::PyNotADirectoryError>(),
+        ExcType::PermissionError => py.get_type::<exceptions::PyPermissionError>(),
+        ExcType::RePatternError => get_re_pattern_error(py).map_or_else(
+            |_| py.get_type::<exceptions::PyRuntimeError>(),
+            |cls| cls.cast::<PyType>().expect("re.error should be a type").clone(),
+        ),
     }
 }
 

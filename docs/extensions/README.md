@@ -75,3 +75,4 @@ make lint-py            # ruff format + pyright + stubtest
 |-----------|--------|-------------|
 | [structured-print-callback](implemented/structured-print-callback.md) | `feature/structured-print-callback` | Receive `print()` args as typed Python objects |
 | [metadata-propagation](implemented/metadata-propagation.md) | `tiny-beaver-ext` | Track data provenance (producers/consumers/tags) through every value |
+| [exception-type-conversion](implemented/exception-type-conversion.md) | `cz/fix/failure` | Fix `type()` on exceptions returning a string instead of the Python class |

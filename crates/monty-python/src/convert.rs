@@ -20,7 +20,7 @@ use pyo3::{
 
 use crate::{
     dataclass::{DcRegistry, dataclass_to_monty, dataclass_to_py, is_dataclass},
-    exceptions::{exc_monty_to_py, exc_to_monty_object},
+    exceptions::{exc_monty_to_py, exc_to_monty_object, exc_type_to_py_type},
     non_serializable::PyNonSerializable,
 };
 
@@ -268,6 +268,8 @@ pub fn monty_to_py(py: Python<'_>, obj: &MontyObject, dc_registry: &DcRegistry) 
         MontyObject::Type(t) => {
             if let Some(name) = t.builtin_name() {
                 import_builtins(py)?.getattr(py, name)
+            } else if let Some(exc_type) = t.as_exception() {
+                Ok(exc_type_to_py_type(py, exc_type).into_any().unbind())
             } else {
                 Ok(PyString::new(py, &format!("<class '{t}'>")).into_any().unbind())
             }
