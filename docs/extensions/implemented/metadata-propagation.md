@@ -23,7 +23,7 @@ sanitization only where needed.
 ```python
 # Inputs provided by host with metadata:
 #   api_key  -> producers={"secrets_vault"}, consumers={"internal_tool"}, tags={"credential"}
-#   user_msg -> producers={"user_input"},    consumers=None (universal),  tags={}
+#   user_msg -> producers={"user_input"},    consumers=UNIVERSAL,         tags={}
 
 result = f"Processing: {user_msg}"
 # result.metadata -> producers={"user_input"}, consumers=universal, tags={}
@@ -43,7 +43,7 @@ Every value carries a `Metadata` record with three fields:
 | Field | Default | Propagation | Semantics |
 |-------|---------|-------------|-----------|
 | `producers` | `{}` (empty) | **Union** | Data sources that contributed to this value |
-| `consumers` | `None` (universal) | **Intersection** | Who may see this value; `None` = no restriction |
+| `consumers` | `UNIVERSAL` | **Intersection** | Who may see this value; `UNIVERSAL` = no restriction |
 | `tags` | `{}` (empty) | **Union** | Classification labels (e.g. `"pii"`, `"credential"`) |
 
 When two values combine (e.g. `a + b`), the result's metadata is:
@@ -51,8 +51,9 @@ When two values combine (e.g. `a + b`), the result's metadata is:
 - `result.consumers = a.consumers & b.consumers` (most restrictive wins)
 - `result.tags = a.tags | b.tags`
 
-The universal set for consumers is represented as `None` at the API boundary
-and as `LabelSet { is_universal: true }` internally. Its algebra:
+The universal set is represented as `UNIVERSAL` (a singleton of type
+`UniversalSet`) at the Python API boundary, `None` in the Rust `ObjectMetadata`
+type, and `LabelSet { is_universal: true }` internally. Its algebra:
 - `union(universal, s) = universal`
 - `intersection(universal, s) = s`
 
@@ -150,18 +151,32 @@ This approach was chosen over alternatives:
 
 ### Public API type
 
-`ObjectMetadata` is the public-facing metadata type using plain strings:
+`ObjectMetadata` is the public-facing metadata type. In Rust, it uses
+`Option<BTreeSet<String>>` where `None` represents the universal set:
 
 ```rust
 pub struct ObjectMetadata {
-    pub producers: BTreeSet<String>,
+    pub producers: Option<BTreeSet<String>>,  // None = universal
     pub consumers: Option<BTreeSet<String>>,  // None = universal
-    pub tags: BTreeSet<String>,
+    pub tags: Option<BTreeSet<String>>,       // None = universal
 }
 ```
 
-`BTreeSet` ensures deterministic serialization order. `Option<BTreeSet>` for
-consumers avoids the need for a sentinel wildcard string at the API boundary.
+`BTreeSet` ensures deterministic serialization order. `Option<BTreeSet>` avoids
+the need for a sentinel wildcard string at the Rust API boundary.
+
+In Python, `None` is replaced with an explicit `UNIVERSAL` sentinel (a singleton
+of type `UniversalSet`) so that the difference between "universal" and "not
+provided" is clear. Each field on the Python `ObjectMetadata` is either a
+`frozenset[str]` or `UNIVERSAL`:
+
+```python
+from pydantic_monty import ObjectMetadata, UNIVERSAL
+
+meta = ObjectMetadata(producers=frozenset({'vault'}))
+assert meta.consumers is UNIVERSAL  # default: no restriction
+assert meta.producers == frozenset({'vault'})
+```
 
 ## Implementation Status
 
@@ -277,6 +292,8 @@ Metadata now enters and exits the VM through the public API.
 
 **Python bindings:**
 - `ObjectMetadata` and `AnnotatedValue` pyclass types for attaching/reading metadata
+- `UniversalSet` pyclass and `UNIVERSAL` module-level singleton for representing
+  the universal set explicitly (replaces `None` at the Python API boundary)
 - `py_to_annotated()` detects `AnnotatedValue` at input boundaries
 - `MontyComplete.metadata` property exposes output metadata
 - Empty label validation (`validate_no_empty_strings()`)
@@ -393,6 +410,48 @@ properties that return `AnnotatedValue` objects — the same type used for input
 | `crates/monty-js/src/monty_cls.rs` | `MontySnapshot` and dispatch updated for `AnnotatedObject` |
 | `crates/monty-cli/src/main.rs` | Helper functions updated for `AnnotatedObject` |
 
+### Phase 7: Explicit universal set sentinel (complete)
+
+The Python API previously used `None` to represent the universal set for metadata
+fields. This was ambiguous — `None` could mean "not provided" or "universal".
+
+This phase introduces an explicit `UniversalSet` type and `UNIVERSAL` singleton
+so the Python API has a clear, self-documenting sentinel:
+
+```python
+from pydantic_monty import ObjectMetadata, UNIVERSAL
+
+meta = ObjectMetadata()
+assert meta.consumers is UNIVERSAL  # explicitly universal, not None
+```
+
+**Changes:**
+
+- `PyUniversalSet` frozen pyclass with `__contains__` (always `True`),
+  `__bool__` (`True`), `__repr__` (`"UNIVERSAL"`), `__eq__`, `__hash__`,
+  `__iter__` (raises `TypeError`), `__len__` (raises `TypeError`)
+- `UNIVERSAL` module-level singleton via `PyOnceLock` — identity checks
+  (`meta.consumers is UNIVERSAL`) work process-wide
+- `ObjectMetadata` field storage changed from `Option<Py<PyFrozenSet>>` to
+  `Py<PyAny>` (either `frozenset` or `UniversalSet`) with `parse_metadata_field`
+  validation
+- Constructor accepts `frozenset[str] | UniversalSet | None` for each field;
+  `None` applies the field-specific default
+- `field_repr` / `field_eq` helpers for repr and equality that handle both types
+- Conversion helpers `option_set_to_py` / `py_field_to_option_set` bridge
+  between Rust `Option<BTreeSet>` and Python `frozenset | UNIVERSAL`
+
+The Rust core `ObjectMetadata` type is **unchanged** — it still uses
+`Option<BTreeSet<String>>` where `None` = universal.
+
+| File | Change |
+|------|--------|
+| `crates/monty-python/src/metadata.rs` | `PyUniversalSet`, `universal_singleton()`, field parsing/repr/eq helpers, updated `PyObjectMetadata` to use `Py<PyAny>` fields |
+| `crates/monty-python/src/lib.rs` | Registered `UniversalSet` class and `UNIVERSAL` constant on the module |
+| `crates/monty-python/python/pydantic_monty/__init__.py` | Exported `UniversalSet` and `UNIVERSAL` |
+| `crates/monty-python/python/pydantic_monty/_monty.pyi` | Added `UniversalSet` class, `UNIVERSAL` constant, updated `ObjectMetadata` field types |
+| `crates/monty-python/tests/test_ext_metadata.py` | Added tests for `UNIVERSAL` singleton, `UniversalSet` behavior, explicit universal fields, round-trip |
+
 ## Testing
 
 ```bash
@@ -427,7 +486,14 @@ Tests cover:
 - One-sided merge: `a + b` where only one operand has metadata preserves it
 
 **Python binding tests** (`crates/monty-python/tests/test_ext_metadata.py`):
+- `ObjectMetadata` construction, defaults, equality, repr, and validation
+- `UNIVERSAL` singleton identity, `isinstance`, `__contains__`, `__bool__`, `__repr__`, `__eq__`
+- `UNIVERSAL` raises `TypeError` on `iter()` and `len()`
+- Explicit `UNIVERSAL` on each field (producers, consumers, tags)
+- `UNIVERSAL` vs `frozenset()` inequality
+- `UNIVERSAL` round-trip through the interpreter
 - Empty string rejection: producers, consumers, and tags must not contain empty strings
+- Invalid type rejection for metadata fields
 
 ## Future Considerations
 

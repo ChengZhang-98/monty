@@ -9,9 +9,9 @@ Every value in Monty can carry **metadata** with three fields:
 
 | Field | Type | Default | Merge rule | Meaning |
 |-------|------|---------|------------|---------|
-| `producers` | `frozenset[str]` | `frozenset()` | **Union** | Data sources that contributed to this value |
-| `consumers` | `frozenset[str] \| None` | `None` | **Intersection** | Who may see this value (`None` = anyone) |
-| `tags` | `frozenset[str]` | `frozenset()` | **Union** | Classification labels |
+| `producers` | `frozenset[str] \| UNIVERSAL` | `frozenset()` | **Union** | Data sources that contributed to this value |
+| `consumers` | `frozenset[str] \| UNIVERSAL` | `UNIVERSAL` | **Intersection** | Who may see this value (`UNIVERSAL` = anyone) |
+| `tags` | `frozenset[str] \| UNIVERSAL` | `frozenset()` | **Union** | Classification labels |
 
 When two values combine (e.g. `a + b`), their metadata merges automatically:
 
@@ -22,7 +22,7 @@ When two values combine (e.g. `a + b`), their metadata merges automatically:
 ## Quick start
 
 ```python
-from pydantic_monty import AnnotatedValue, Monty, MontyComplete, ObjectMetadata
+from pydantic_monty import AnnotatedValue, Monty, MontyComplete, ObjectMetadata, UNIVERSAL
 
 # 1. Create metadata
 meta = ObjectMetadata(
@@ -41,6 +41,7 @@ result = m.start(inputs={'x': annotated_input})
 assert isinstance(result, MontyComplete)
 assert result.output == 43
 assert result.metadata.producers == frozenset({'user_input'})
+assert result.metadata.consumers is UNIVERSAL  # default: no restriction
 assert result.metadata.tags == frozenset({'untrusted'})
 ```
 
@@ -53,30 +54,52 @@ Immutable metadata record. All fields are keyword-only.
 ```python
 ObjectMetadata(
     *,
-    producers: frozenset[str] | None = None,  # defaults to frozenset()
-    consumers: frozenset[str] | None = None,  # defaults to None (universal)
-    tags: frozenset[str] | None = None,       # defaults to frozenset()
+    producers: frozenset[str] | UniversalSet | None = None,  # defaults to frozenset()
+    consumers: frozenset[str] | UniversalSet | None = None,  # defaults to UNIVERSAL
+    tags: frozenset[str] | UniversalSet | None = None,       # defaults to frozenset()
 )
 ```
+
+Omitting a field (or passing `None`) uses the field-specific default:
+`frozenset()` for producers/tags, `UNIVERSAL` for consumers.
 
 **Properties:**
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `.producers` | `frozenset[str]` | Source names |
-| `.consumers` | `frozenset[str] \| None` | Allowed consumer names, or `None` for universal |
-| `.tags` | `frozenset[str]` | Classification labels |
+| `.producers` | `frozenset[str] \| UniversalSet` | Source names, or `UNIVERSAL` |
+| `.consumers` | `frozenset[str] \| UniversalSet` | Allowed consumer names, or `UNIVERSAL` (no restriction) |
+| `.tags` | `frozenset[str] \| UniversalSet` | Classification labels, or `UNIVERSAL` |
 
-**Important — `consumers=None` vs `consumers=frozenset()`:**
+### `UNIVERSAL` and `UniversalSet`
+
+`UNIVERSAL` is a module-level singleton of type `UniversalSet`. It represents the
+infinite universal set — every membership check returns `True`:
+
+```python
+from pydantic_monty import UNIVERSAL, UniversalSet
+
+assert 'anything' in UNIVERSAL  # always True
+assert bool(UNIVERSAL) is True
+assert isinstance(UNIVERSAL, UniversalSet)
+```
+
+`UNIVERSAL` cannot be iterated or measured (`iter()` and `len()` raise `TypeError`).
+
+**Important — `UNIVERSAL` vs `frozenset()`:**
 
 | Value | Meaning |
 |-------|---------|
-| `consumers=None` (default) | **Universal** — any consumer may see the value |
+| `consumers=UNIVERSAL` (default) | **Universal set** — any consumer may see the value |
 | `consumers=frozenset()` | **Empty set** — *no* consumer is allowed to see the value |
 | `consumers=frozenset({'admin'})` | Only consumers named `'admin'` may see the value |
 
+`UNIVERSAL` and `frozenset()` are semantically very different. `UNIVERSAL` means
+"no restrictions" while `frozenset()` means "nobody".
+
 When two values with different consumer sets combine, the result gets the
 **intersection** (most restrictive). So `{'admin', 'user'} & {'admin'}` = `{'admin'}`.
+`UNIVERSAL & s = s` for any set `s`.
 
 **Validation:**
 
@@ -129,7 +152,7 @@ result = m.start(inputs={
 })
 
 # result.metadata.producers == frozenset({'api', 'db'})     — union
-# result.metadata.consumers == frozenset({'admin'})          — intersection (None & {'admin'} = {'admin'})
+# result.metadata.consumers == frozenset({'admin'})          — intersection (UNIVERSAL & {'admin'} = {'admin'})
 # result.metadata.tags      == frozenset({'external'})       — union
 ```
 
@@ -151,7 +174,7 @@ to read them — these return `AnnotatedValue` objects (the same type used for
 inputs):
 
 ```python
-from pydantic_monty import AnnotatedValue, FunctionSnapshot, Monty, ObjectMetadata
+from pydantic_monty import AnnotatedValue, FunctionSnapshot, Monty, ObjectMetadata, UNIVERSAL
 
 code = 'fetch(api_key, url)'
 m = Monty(code, inputs=['api_key', 'url'], external_functions=['fetch'])
@@ -267,7 +290,7 @@ secret = get_secret()   # producers={'vault'}, consumers={'admin'}
 public = 'hello'        # no metadata
 
 lst = [secret, public]
-x = lst[1]              # x gets public's metadata (None), NOT merged with secret's
+x = lst[1]              # x gets public's metadata (default), NOT merged with secret's
 ```
 
 This means you can safely put restricted and unrestricted data in the same
@@ -278,6 +301,8 @@ container — extracting an element gives you only *that element's* metadata.
 After execution, inspect `result.metadata`:
 
 ```python
+from pydantic_monty import UNIVERSAL
+
 result = m.start(inputs={'x': AnnotatedValue(42, meta)})
 
 if result.metadata is not None:
@@ -285,8 +310,8 @@ if result.metadata is not None:
     if 'vault' in result.metadata.producers:
         print('Output contains data from the vault')
 
-    if result.metadata.consumers is not None:
-        # Access is restricted
+    if result.metadata.consumers is not UNIVERSAL:
+        # Access is restricted to specific consumers
         allowed = result.metadata.consumers
         if current_user not in allowed:
             raise PermissionError(f'User {current_user} not in {allowed}')
@@ -305,7 +330,7 @@ When using `structured_print_callback`, each argument is delivered as an
 This lets you inspect per-argument metadata at the print boundary:
 
 ```python
-from pydantic_monty import AnnotatedValue, Monty, ObjectMetadata
+from pydantic_monty import AnnotatedValue, Monty, ObjectMetadata, UNIVERSAL
 
 code = 'print(secret, "public text")'
 m = Monty(code, inputs=['secret'])
@@ -318,7 +343,7 @@ secret_meta = ObjectMetadata(
 def on_print(stream, objects, sep, end):
     for obj in objects:
         assert isinstance(obj, AnnotatedValue)
-        if obj.metadata.consumers is not None:
+        if obj.metadata.consumers is not UNIVERSAL:
             allowed = obj.metadata.consumers
             print(f'  restricted to: {allowed}')
         print(f'  value: {obj.value!r}')
@@ -334,7 +359,7 @@ m.run(
 ```
 
 Literal arguments (like `"public text"` above) carry DEFAULT metadata — empty
-producers, universal consumers (`None`), and empty tags.
+producers, `UNIVERSAL` consumers, and empty tags.
 
 ## Limitations
 
@@ -355,7 +380,7 @@ producers, universal consumers (`None`), and empty tags.
 ## Complete example
 
 ```python
-from pydantic_monty import AnnotatedValue, Monty, MontyComplete, ObjectMetadata
+from pydantic_monty import AnnotatedValue, Monty, MontyComplete, ObjectMetadata, UNIVERSAL
 
 # Simulate a pipeline with data from multiple sources
 code = '''
@@ -393,7 +418,7 @@ assert meta is not None
 # Producers: both sources contributed
 assert meta.producers == frozenset({'user_input', 'internal_api'})
 
-# Consumers: intersection of None (universal) and {'admin'} = {'admin'}
+# Consumers: intersection of UNIVERSAL and {'admin'} = {'admin'}
 assert meta.consumers == frozenset({'admin'})
 
 # Tags: union of both
