@@ -35,6 +35,11 @@ pub fn builtin_print(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues)
         // Structured path: convert each Value to AnnotatedObject with per-arg metadata.
         // pending_arg_metadata was populated by pop_n_args before the builtin was called.
         let arg_meta = mem::take(&mut vm.pending_arg_metadata);
+        debug_assert_eq!(
+            arg_meta.len(),
+            positional.as_slice().len(),
+            "pending_arg_metadata length should match positional arg count"
+        );
         let objects: Vec<AnnotatedObject> = positional
             .as_slice()
             .iter()

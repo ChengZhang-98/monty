@@ -83,10 +83,10 @@ impl PrintWriter<'_> {
     /// [`stdout_write_structured`](Self::stdout_write_structured) instead of
     /// per-argument string fragments.
     ///
-    /// When this returns `true`, `builtin_print` will convert each `Value` to a
-    /// [`MontyObject`] and deliver all positional arguments in a single
-    /// `stdout_write_structured` call, rather than calling `stdout_write` and
-    /// `stdout_push` multiple times.
+    /// When this returns `true`, `builtin_print` will convert each `Value` to an
+    /// [`AnnotatedObject`] (value + provenance metadata) and deliver all positional
+    /// arguments in a single `stdout_write_structured` call, rather than calling
+    /// `stdout_write` and `stdout_push` multiple times.
     #[must_use]
     pub fn wants_structured(&self) -> bool {
         match self {
