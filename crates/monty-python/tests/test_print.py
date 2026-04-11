@@ -212,16 +212,20 @@ list(map(print, [1, 2, 3]))
 
 
 StructuredCall = tuple[str, list[object], str, str]
-StructuredPrintCallback = Callable[[str, list[object], str, str], None]
+StructuredPrintCallback = Callable[[str, list[pydantic_monty.AnnotatedValue], str, str], None]
 
 
 def make_structured_collector() -> tuple[list[StructuredCall], StructuredPrintCallback]:
-    """Create a structured print callback that collects calls into a list."""
+    """Create a structured print callback that collects calls into a list.
+
+    Unwraps ``AnnotatedValue`` objects to plain values so existing tests
+    can compare against simple Python literals.
+    """
     calls: list[StructuredCall] = []
 
-    def callback(stream: str, objects: list[object], sep: str, end: str) -> None:
+    def callback(stream: str, objects: list[pydantic_monty.AnnotatedValue], sep: str, end: str) -> None:
         assert stream == 'stdout'
-        calls.append((stream, list(objects), sep, end))
+        calls.append((stream, [obj.value for obj in objects], sep, end))
 
     return calls, callback
 
@@ -425,3 +429,107 @@ def test_structured_print_type_of_dataclass() -> None:
     assert isinstance(obj, pydantic_monty.NonSerializable)
     assert obj.type_name == snapshot('type')
     assert obj.repr == snapshot("<class 'dataclass'>")
+
+
+# === structured_print_callback metadata tests ===
+
+
+def make_annotated_structured_collector() -> tuple[
+    list[tuple[str, list[pydantic_monty.AnnotatedValue], str, str]], StructuredPrintCallback
+]:
+    """Create a structured print callback that keeps full AnnotatedValue objects."""
+    calls: list[tuple[str, list[pydantic_monty.AnnotatedValue], str, str]] = []
+
+    def callback(stream: str, objects: list[pydantic_monty.AnnotatedValue], sep: str, end: str) -> None:
+        assert stream == 'stdout'
+        calls.append((stream, list(objects), sep, end))
+
+    return calls, callback
+
+
+def test_structured_print_annotated_value_type() -> None:
+    """Each object in the callback is an AnnotatedValue with .value and .metadata."""
+    m = pydantic_monty.Monty('print("hello")')
+    calls, callback = make_annotated_structured_collector()
+    m.run(structured_print_callback=callback)
+    assert len(calls) == snapshot(1)
+    _, objects, _, _ = calls[0]
+    assert len(objects) == snapshot(1)
+    obj = objects[0]
+    assert isinstance(obj, pydantic_monty.AnnotatedValue)
+    assert obj.value == snapshot('hello')
+    assert isinstance(obj.metadata, pydantic_monty.ObjectMetadata)
+
+
+def test_structured_print_literal_has_default_metadata() -> None:
+    """Literal args have DEFAULT metadata (empty producers, universal consumers, empty tags)."""
+    m = pydantic_monty.Monty('print("txt", 42)')
+    calls, callback = make_annotated_structured_collector()
+    m.run(structured_print_callback=callback)
+    _, objects, _, _ = calls[0]
+    for obj in objects:
+        assert obj.metadata.producers == snapshot(frozenset())
+        assert obj.metadata.consumers is None
+        assert obj.metadata.tags == snapshot(frozenset())
+
+
+def test_structured_print_propagates_input_metadata() -> None:
+    """Metadata from annotated inputs propagates to print callback args."""
+    code = 'print(x)'
+    m = pydantic_monty.Monty(code, inputs=['x'])
+    meta = pydantic_monty.ObjectMetadata(producers=frozenset({'vault'}), tags=frozenset({'secret'}))
+    calls, callback = make_annotated_structured_collector()
+    m.run(
+        inputs={'x': pydantic_monty.AnnotatedValue(42, meta)},
+        structured_print_callback=callback,
+    )
+    _, objects, _, _ = calls[0]
+    assert len(objects) == snapshot(1)
+    assert objects[0].value == snapshot(42)
+    assert objects[0].metadata.producers == snapshot(frozenset({'vault'}))
+    assert objects[0].metadata.tags == snapshot(frozenset({'secret'}))
+
+
+def test_structured_print_merged_metadata() -> None:
+    """When a print arg is computed from multiple tracked values, metadata merges."""
+    code = 'print(a + b)'
+    m = pydantic_monty.Monty(code, inputs=['a', 'b'])
+    meta_a = pydantic_monty.ObjectMetadata(producers=frozenset({'api'}), tags=frozenset({'external'}))
+    meta_b = pydantic_monty.ObjectMetadata(
+        producers=frozenset({'db'}), consumers=frozenset({'admin'}), tags=frozenset({'internal'})
+    )
+    calls, callback = make_annotated_structured_collector()
+    m.run(
+        inputs={
+            'a': pydantic_monty.AnnotatedValue(10, meta_a),
+            'b': pydantic_monty.AnnotatedValue(20, meta_b),
+        },
+        structured_print_callback=callback,
+    )
+    _, objects, _, _ = calls[0]
+    assert objects[0].value == snapshot(30)
+    # producers: union
+    assert objects[0].metadata.producers == snapshot(frozenset({'api', 'db'}))
+    # consumers: intersection (None & {'admin'} = {'admin'})
+    assert objects[0].metadata.consumers == snapshot(frozenset({'admin'}))
+    # tags: union
+    assert objects[0].metadata.tags == snapshot(frozenset({'external', 'internal'}))
+
+
+def test_structured_print_mixed_tracked_and_untracked() -> None:
+    """Mix of tracked and untracked args — each carries its own metadata."""
+    code = 'print(x, "literal")'
+    m = pydantic_monty.Monty(code, inputs=['x'])
+    meta = pydantic_monty.ObjectMetadata(producers=frozenset({'sensor'}))
+    calls, callback = make_annotated_structured_collector()
+    m.run(
+        inputs={'x': pydantic_monty.AnnotatedValue(99, meta)},
+        structured_print_callback=callback,
+    )
+    _, objects, _, _ = calls[0]
+    # First arg carries input metadata
+    assert objects[0].value == snapshot(99)
+    assert objects[0].metadata.producers == snapshot(frozenset({'sensor'}))
+    # Second arg is a literal — default metadata
+    assert objects[1].value == snapshot('literal')
+    assert objects[1].metadata.producers == snapshot(frozenset())

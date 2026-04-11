@@ -7,9 +7,9 @@ use std::{
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 use ::monty::{
-    ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject, MontyRun, NameLookupResult,
-    NoLimitTracker, OsCall, PrintWriter, PrintWriterCallback, ReplFunctionCall, ReplNameLookup, ReplOsCall,
-    ReplProgress, ReplResolveFutures, ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
+    AnnotatedObject, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject, MontyRun,
+    NameLookupResult, NoLimitTracker, OsCall, PrintWriter, PrintWriterCallback, ReplFunctionCall, ReplNameLookup,
+    ReplOsCall, ReplProgress, ReplResolveFutures, ReplStartError, ResolveFutures, ResourceTracker, RunProgress,
 };
 use monty::{NameLookup, fs::MountTable};
 use monty_type_checking::{SourceFile, type_check};
@@ -25,7 +25,7 @@ use send_wrapper::SendWrapper;
 
 use crate::{
     async_dispatch::{await_run_transition, dispatch_loop_run, with_print_writer},
-    convert::{get_docstring, monty_to_py, monty_to_py_structured, py_to_monty},
+    convert::{annotated_to_py_structured, get_docstring, monty_to_py, py_to_monty},
     dataclass::DcRegistry,
     exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
@@ -1897,11 +1897,12 @@ impl PrintWriterCallback for CallbackStringPrint {
 }
 
 /// A `PrintWriter` implementation that calls a Python callback once per `print()`
-/// invocation with all positional arguments as structured Python objects.
+/// invocation with all positional arguments as `AnnotatedValue` Python objects.
 ///
-/// The callback signature is `(stream: str, objects: list[Any], sep: str, end: str)`.
-/// JSON-serializable types (int, str, float, bool, None, list, dict, tuple) are
-/// passed as native Python objects. Non-serializable types fall back to their `repr()` string.
+/// The callback signature is `(stream: str, objects: list[AnnotatedValue], sep: str, end: str)`.
+/// Each `AnnotatedValue` bundles the print argument value with its provenance metadata
+/// (`ObjectMetadata`). JSON-serializable types are passed as native Python objects inside
+/// the `AnnotatedValue.value` field. Non-serializable types are wrapped in `NonSerializable`.
 #[derive(Debug)]
 pub(crate) struct CallbackStructuredPrint {
     callback: Py<PyAny>,
@@ -1940,7 +1941,7 @@ impl PrintWriterCallback for CallbackStructuredPrint {
 
     fn stdout_write_structured(
         &mut self,
-        objects: Vec<MontyObject>,
+        objects: Vec<AnnotatedObject>,
         sep: &str,
         end: &str,
     ) -> Result<(), MontyException> {
@@ -1950,7 +1951,7 @@ impl PrintWriterCallback for CallbackStructuredPrint {
                 py,
                 objects
                     .iter()
-                    .map(|obj| monty_to_py_structured(py, obj, dc_registry))
+                    .map(|obj| annotated_to_py_structured(py, obj, dc_registry))
                     .collect::<PyResult<Vec<_>>>()?,
             )?;
             self.callback.bind(py).call1(("stdout", py_objects, sep, end))?;

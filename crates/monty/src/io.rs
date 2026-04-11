@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::{exception_public::MontyException, object::MontyObject};
+use crate::{exception_public::MontyException, metadata::AnnotatedObject};
 
 /// Output handler for the `print()` builtin function.
 ///
@@ -96,7 +96,8 @@ impl PrintWriter<'_> {
     }
 
     /// Called once per `print()` invocation with all positional arguments as
-    /// structured [`MontyObject`] values, plus the resolved `sep` and `end`.
+    /// [`AnnotatedObject`] values (each pairing a [`MontyObject`](crate::MontyObject)
+    /// with optional provenance metadata), plus the resolved `sep` and `end`.
     ///
     /// JSON-serializable types (int, str, float, bool, None, list, dict, tuple)
     /// are passed as their native `MontyObject` variants. Non-serializable types
@@ -104,7 +105,7 @@ impl PrintWriter<'_> {
     /// a type name and their `repr()` string.
     pub fn stdout_write_structured(
         &mut self,
-        objects: Vec<MontyObject>,
+        objects: Vec<AnnotatedObject>,
         sep: &str,
         end: &str,
     ) -> Result<(), MontyException> {
@@ -148,15 +149,16 @@ pub trait PrintWriterCallback {
         false
     }
 
-    /// Receives all positional arguments of a single `print()` call as structured
-    /// [`MontyObject`] values, along with the resolved `sep` and `end` strings.
+    /// Receives all positional arguments of a single `print()` call as
+    /// [`AnnotatedObject`] values (each pairing a value with optional provenance
+    /// metadata), along with the resolved `sep` and `end` strings.
     ///
     /// Only called when [`wants_structured`](Self::wants_structured) returns `true`.
     /// The default implementation falls back to `stdout_write`/`stdout_push`,
     /// formatting each object via its string representation.
     fn stdout_write_structured(
         &mut self,
-        objects: Vec<MontyObject>,
+        objects: Vec<AnnotatedObject>,
         sep: &str,
         end: &str,
     ) -> Result<(), MontyException> {
@@ -167,7 +169,7 @@ pub trait PrintWriterCallback {
             } else {
                 self.stdout_write(Cow::Borrowed(sep))?;
             }
-            self.stdout_write(Cow::Owned(obj.to_string()))?;
+            self.stdout_write(Cow::Owned(obj.value.to_string()))?;
         }
         self.stdout_write(Cow::Borrowed(end))?;
         Ok(())
