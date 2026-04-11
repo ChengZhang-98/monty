@@ -269,3 +269,106 @@ def test_repl_no_metadata_returns_none():
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(3)
     assert result.metadata is None
+
+
+# === FunctionSnapshot annotated_args / annotated_kwargs ===
+
+
+def test_annotated_args_on_function_snapshot():
+    """FunctionSnapshot.annotated_args carries per-argument metadata."""
+    meta = pydantic_monty.ObjectMetadata(
+        producers=frozenset({'vault'}),
+        consumers=frozenset({'internal'}),
+    )
+    code = 'fetch(api_key, url)'
+    m = pydantic_monty.Monty(code, inputs=['api_key', 'url'])
+    snap = m.start(
+        inputs={
+            'api_key': pydantic_monty.AnnotatedValue('secret', meta),
+            'url': 'https://example.com',
+        }
+    )
+    assert isinstance(snap, pydantic_monty.FunctionSnapshot)
+
+    annotated = snap.annotated_args
+    assert len(annotated) == snapshot(2)
+
+    # First arg carries metadata
+    assert annotated[0].value == snapshot('secret')
+    assert annotated[0].metadata.producers == snapshot(frozenset({'vault'}))
+    assert annotated[0].metadata.consumers == snapshot(frozenset({'internal'}))
+
+    # Second arg has default (empty) metadata
+    assert annotated[1].value == snapshot('https://example.com')
+    assert annotated[1].metadata.producers == snapshot(frozenset())
+
+    # Plain .args still works
+    assert snap.args == snapshot(('secret', 'https://example.com'))
+
+
+def test_annotated_kwargs_on_function_snapshot():
+    """FunctionSnapshot.annotated_kwargs carries per-kwarg metadata."""
+    meta = pydantic_monty.ObjectMetadata(
+        producers=frozenset({'db'}),
+        tags=frozenset({'pii'}),
+    )
+    code = 'fetch(timeout=t)'
+    m = pydantic_monty.Monty(code, inputs=['t'])
+    snap = m.start(
+        inputs={
+            't': pydantic_monty.AnnotatedValue(30, meta),
+        }
+    )
+    assert isinstance(snap, pydantic_monty.FunctionSnapshot)
+
+    annotated_kw = snap.annotated_kwargs
+    assert 'timeout' in annotated_kw
+    assert annotated_kw['timeout'].value == snapshot(30)
+    assert annotated_kw['timeout'].metadata.producers == snapshot(frozenset({'db'}))
+    assert annotated_kw['timeout'].metadata.tags == snapshot(frozenset({'pii'}))
+
+    # Plain .kwargs still works
+    assert snap.kwargs == snapshot({'timeout': 30})
+
+
+def test_annotated_args_no_metadata():
+    """FunctionSnapshot.annotated_args with plain inputs yields default metadata."""
+    code = 'fetch(x)'
+    m = pydantic_monty.Monty(code, inputs=['x'])
+    snap = m.start(inputs={'x': 42})
+    assert isinstance(snap, pydantic_monty.FunctionSnapshot)
+
+    annotated = snap.annotated_args
+    assert len(annotated) == snapshot(1)
+    assert annotated[0].value == snapshot(42)
+    # default metadata: empty producers, universal consumers (None)
+    assert annotated[0].metadata.producers == snapshot(frozenset())
+
+
+def test_annotated_args_metadata_survives_serialization():
+    """Metadata on FunctionSnapshot args should survive dump/load round-trip."""
+    meta = pydantic_monty.ObjectMetadata(
+        producers=frozenset({'vault'}),
+        consumers=frozenset({'internal'}),
+        tags=frozenset({'secret'}),
+    )
+    code = 'fetch(key)'
+    m = pydantic_monty.Monty(code, inputs=['key'])
+    snap = m.start(
+        inputs={
+            'key': pydantic_monty.AnnotatedValue('s3cr3t', meta),
+        }
+    )
+    assert isinstance(snap, pydantic_monty.FunctionSnapshot)
+
+    # Round-trip through serialization
+    data = snap.dump()
+    loaded = pydantic_monty.load_snapshot(data)
+    assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
+
+    annotated = loaded.annotated_args
+    assert len(annotated) == snapshot(1)
+    assert annotated[0].value == snapshot('s3cr3t')
+    assert annotated[0].metadata.producers == snapshot(frozenset({'vault'}))
+    assert annotated[0].metadata.consumers == snapshot(frozenset({'internal'}))
+    assert annotated[0].metadata.tags == snapshot(frozenset({'secret'}))
