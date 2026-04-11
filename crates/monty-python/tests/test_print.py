@@ -469,7 +469,7 @@ def test_structured_print_literal_has_default_metadata() -> None:
     _, objects, _, _ = calls[0]
     for obj in objects:
         assert obj.metadata.producers == snapshot(frozenset())
-        assert obj.metadata.consumers is None
+        assert obj.metadata.consumers is pydantic_monty.UNIVERSAL
         assert obj.metadata.tags == snapshot(frozenset())
 
 

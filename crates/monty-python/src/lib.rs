@@ -21,7 +21,7 @@ use std::sync::OnceLock;
 
 // Use `::monty` to refer to the external crate (not the pymodule)
 pub use exceptions::{MontyError, MontyRuntimeError, MontySyntaxError, MontyTypingError, PyFrame};
-pub use metadata::{PyAnnotatedValue, PyObjectMetadata};
+pub use metadata::{PyAnnotatedValue, PyObjectMetadata, PyUniversalSet, universal_singleton};
 pub use monty_cls::{PyFunctionSnapshot, PyFutureSnapshot, PyMonty, PyMontyComplete, PyNameLookupSnapshot};
 pub use mount::PyMountDir;
 pub use non_serializable::PyNonSerializable;
@@ -78,6 +78,8 @@ mod _monty {
     use super::PyNonSerializable as NonSerializable;
     #[pymodule_export]
     use super::PyObjectMetadata as ObjectMetadata;
+    #[pymodule_export]
+    use super::PyUniversalSet as UniversalSet;
     use super::get_version;
     #[pymodule_export]
     use super::serialization::load_repl_snapshot;
@@ -87,6 +89,7 @@ mod _monty {
     #[pymodule_init]
     fn init(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add("__version__", get_version())?;
+        m.add("UNIVERSAL", super::universal_singleton(m.py())?)?;
         Ok(())
     }
 }

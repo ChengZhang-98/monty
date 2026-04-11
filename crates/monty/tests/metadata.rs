@@ -11,11 +11,13 @@ use monty::ObjectMetadata;
 
 // === ObjectMetadata construction helpers ===
 
-fn meta(producers: &[&str], consumers: Option<&[&str]>, tags: &[&str]) -> ObjectMetadata {
+/// Builds an `ObjectMetadata` from slices. Each field uses `Option`: `None` = universal,
+/// `Some(slice)` = explicit set.
+fn meta(producers: Option<&[&str]>, consumers: Option<&[&str]>, tags: Option<&[&str]>) -> ObjectMetadata {
     ObjectMetadata {
-        producers: producers.iter().map(ToString::to_string).collect(),
+        producers: producers.map(|p| p.iter().map(ToString::to_string).collect()),
         consumers: consumers.map(|c| c.iter().map(ToString::to_string).collect()),
-        tags: tags.iter().map(ToString::to_string).collect(),
+        tags: tags.map(|t| t.iter().map(ToString::to_string).collect()),
     }
 }
 
@@ -28,38 +30,38 @@ fn empty_set() -> BTreeSet<String> {
 #[test]
 fn object_metadata_default_is_empty() {
     let m = ObjectMetadata::default();
-    assert!(m.producers.is_empty());
+    assert_eq!(m.producers, Some(BTreeSet::new()));
     assert_eq!(m.consumers, None);
-    assert!(m.tags.is_empty());
+    assert_eq!(m.tags, Some(BTreeSet::new()));
 }
 
 // === ObjectMetadata equality ===
 
 #[test]
 fn object_metadata_equality() {
-    let a = meta(&["p1", "p2"], Some(&["c1"]), &["t1"]);
-    let b = meta(&["p1", "p2"], Some(&["c1"]), &["t1"]);
+    let a = meta(Some(&["p1", "p2"]), Some(&["c1"]), Some(&["t1"]));
+    let b = meta(Some(&["p1", "p2"]), Some(&["c1"]), Some(&["t1"]));
     assert_eq!(a, b);
 }
 
 #[test]
 fn object_metadata_inequality_producers() {
-    let a = meta(&["p1"], None, &[]);
-    let b = meta(&["p2"], None, &[]);
+    let a = meta(Some(&["p1"]), None, Some(&[]));
+    let b = meta(Some(&["p2"]), None, Some(&[]));
     assert_ne!(a, b);
 }
 
 #[test]
 fn object_metadata_inequality_consumers() {
-    let a = meta(&[], Some(&["c1"]), &[]);
-    let b = meta(&[], Some(&["c2"]), &[]);
+    let a = meta(Some(&[]), Some(&["c1"]), Some(&[]));
+    let b = meta(Some(&[]), Some(&["c2"]), Some(&[]));
     assert_ne!(a, b);
 }
 
 #[test]
 fn object_metadata_inequality_tags() {
-    let a = meta(&[], None, &["t1"]);
-    let b = meta(&[], None, &["t2"]);
+    let a = meta(Some(&[]), None, Some(&["t1"]));
+    let b = meta(Some(&[]), None, Some(&["t2"]));
     assert_ne!(a, b);
 }
 
@@ -67,7 +69,7 @@ fn object_metadata_inequality_tags() {
 
 #[test]
 fn object_metadata_serde_json_roundtrip() {
-    let m = meta(&["p1", "p2"], Some(&["c1"]), &["t1", "t2"]);
+    let m = meta(Some(&["p1", "p2"]), Some(&["c1"]), Some(&["t1", "t2"]));
     let json = serde_json::to_string(&m).unwrap();
     let m2: ObjectMetadata = serde_json::from_str(&json).unwrap();
     assert_eq!(m, m2);
@@ -75,7 +77,7 @@ fn object_metadata_serde_json_roundtrip() {
 
 #[test]
 fn object_metadata_serde_json_roundtrip_universal_consumers() {
-    let m = meta(&["p1"], None, &[]);
+    let m = meta(Some(&["p1"]), None, Some(&[]));
     let json = serde_json::to_string(&m).unwrap();
     let m2: ObjectMetadata = serde_json::from_str(&json).unwrap();
     assert_eq!(m, m2);
@@ -92,7 +94,11 @@ fn object_metadata_serde_json_roundtrip_empty() {
 
 #[test]
 fn object_metadata_serde_postcard_roundtrip() {
-    let m = meta(&["source_a", "source_b"], Some(&["consumer_x"]), &["pii", "sensitive"]);
+    let m = meta(
+        Some(&["source_a", "source_b"]),
+        Some(&["consumer_x"]),
+        Some(&["pii", "sensitive"]),
+    );
     let bytes = postcard::to_allocvec(&m).unwrap();
     let m2: ObjectMetadata = postcard::from_bytes(&bytes).unwrap();
     assert_eq!(m, m2);
@@ -103,25 +109,63 @@ fn object_metadata_serde_postcard_roundtrip() {
 #[test]
 fn object_metadata_btreeset_deterministic_order() {
     // BTreeSet ensures deterministic serialization regardless of insertion order
-    let a = meta(&["z", "a", "m"], Some(&["b", "a"]), &["x", "c"]);
+    let a = meta(Some(&["z", "a", "m"]), Some(&["b", "a"]), Some(&["x", "c"]));
     let expected_producers: BTreeSet<String> = ["a", "m", "z"].iter().map(ToString::to_string).collect();
     let expected_consumers: BTreeSet<String> = ["a", "b"].iter().map(ToString::to_string).collect();
     let expected_tags: BTreeSet<String> = ["c", "x"].iter().map(ToString::to_string).collect();
-    assert_eq!(a.producers, expected_producers);
+    assert_eq!(a.producers, Some(expected_producers));
     assert_eq!(a.consumers, Some(expected_consumers));
-    assert_eq!(a.tags, expected_tags);
+    assert_eq!(a.tags, Some(expected_tags));
 }
 
-// === ObjectMetadata with empty consumers vs None ===
+// === ObjectMetadata with empty set vs None (universal) ===
 
 #[test]
 fn object_metadata_none_consumers_vs_empty_consumers() {
     // None means universal (no restriction), empty set means no one can consume
-    let universal = meta(&[], None, &[]);
-    let no_one = meta(&[], Some(&[]), &[]);
+    let universal = meta(Some(&[]), None, Some(&[]));
+    let no_one = meta(Some(&[]), Some(&[]), Some(&[]));
     assert_ne!(universal, no_one);
     assert_eq!(universal.consumers, None);
     assert_eq!(no_one.consumers, Some(empty_set()));
+}
+
+#[test]
+fn object_metadata_none_producers_vs_empty_producers() {
+    // None means universal (every source), empty set means no known sources
+    let universal = meta(None, None, Some(&[]));
+    let empty = meta(Some(&[]), None, Some(&[]));
+    assert_ne!(universal, empty);
+    assert_eq!(universal.producers, None);
+    assert_eq!(empty.producers, Some(BTreeSet::new()));
+}
+
+#[test]
+fn object_metadata_none_tags_vs_empty_tags() {
+    // None means universal (every label), empty set means no labels
+    let universal = meta(Some(&[]), None, None);
+    let empty = meta(Some(&[]), None, Some(&[]));
+    assert_ne!(universal, empty);
+    assert_eq!(universal.tags, None);
+    assert_eq!(empty.tags, Some(BTreeSet::new()));
+}
+
+#[test]
+fn object_metadata_serde_json_roundtrip_universal_producers() {
+    let m = meta(None, Some(&["c"]), Some(&[]));
+    let json = serde_json::to_string(&m).unwrap();
+    let m2: ObjectMetadata = serde_json::from_str(&json).unwrap();
+    assert_eq!(m, m2);
+    assert_eq!(m2.producers, None);
+}
+
+#[test]
+fn object_metadata_serde_json_roundtrip_universal_tags() {
+    let m = meta(Some(&[]), Some(&["c"]), None);
+    let json = serde_json::to_string(&m).unwrap();
+    let m2: ObjectMetadata = serde_json::from_str(&json).unwrap();
+    assert_eq!(m, m2);
+    assert_eq!(m2.tags, None);
 }
 
 // === End-to-end metadata propagation tests (Rust core API) ===
@@ -144,7 +188,7 @@ fn run_with_meta(
 #[test]
 fn metadata_passthrough_single_input() {
     // An input with metadata passed straight through should retain its metadata
-    let input_meta = meta(&["source_a"], Some(&["consumer_x"]), &["pii"]);
+    let input_meta = meta(Some(&["source_a"]), Some(&["consumer_x"]), Some(&["pii"]));
     let input = AnnotatedObject::new(MontyObject::Int(42), Some(input_meta.clone()));
     let (value, out_meta) = run_with_meta("x", vec!["x"], vec![input]);
     assert_eq!(value, MontyObject::Int(42));
@@ -163,8 +207,8 @@ fn metadata_default_for_no_metadata_input() {
 #[test]
 fn metadata_merge_on_binary_op() {
     // a + b should merge metadata: producers union, consumers intersection, tags union
-    let meta_a = meta(&["src_a"], Some(&["c1", "c2"]), &["tag_a"]);
-    let meta_b = meta(&["src_b"], Some(&["c2", "c3"]), &["tag_b"]);
+    let meta_a = meta(Some(&["src_a"]), Some(&["c1", "c2"]), Some(&["tag_a"]));
+    let meta_b = meta(Some(&["src_b"]), Some(&["c2", "c3"]), Some(&["tag_b"]));
     let input_a = AnnotatedObject::new(MontyObject::Int(10), Some(meta_a));
     let input_b = AnnotatedObject::new(MontyObject::Int(20), Some(meta_b));
 
@@ -175,18 +219,21 @@ fn metadata_merge_on_binary_op() {
     // producers: union of {src_a} and {src_b}
     assert_eq!(
         out.producers,
-        BTreeSet::from(["src_a".to_string(), "src_b".to_string()])
+        Some(BTreeSet::from(["src_a".to_string(), "src_b".to_string()]))
     );
     // consumers: intersection of {c1, c2} and {c2, c3} = {c2}
     assert_eq!(out.consumers, Some(BTreeSet::from(["c2".to_string()])));
     // tags: union of {tag_a} and {tag_b}
-    assert_eq!(out.tags, BTreeSet::from(["tag_a".to_string(), "tag_b".to_string()]));
+    assert_eq!(
+        out.tags,
+        Some(BTreeSet::from(["tag_a".to_string(), "tag_b".to_string()]))
+    );
 }
 
 #[test]
 fn metadata_propagates_through_function_call() {
     // Metadata should propagate through function arguments and returns
-    let input_meta = meta(&["secret"], None, &["classified"]);
+    let input_meta = meta(Some(&["secret"]), None, Some(&["classified"]));
     let input = AnnotatedObject::new(MontyObject::Int(5), Some(input_meta.clone()));
     let code = "def double(n):\n    return n * 2\ndouble(x)";
     let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
@@ -198,7 +245,7 @@ fn metadata_propagates_through_function_call() {
 #[test]
 fn metadata_propagates_through_variable_assignment() {
     // a = x; b = a + 1; b should carry x's metadata
-    let input_meta = meta(&["origin"], None, &[]);
+    let input_meta = meta(Some(&["origin"]), None, Some(&[]));
     let input = AnnotatedObject::new(MontyObject::Int(7), Some(input_meta.clone()));
     let code = "a = x\nb = a + 1\nb";
     let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
@@ -209,7 +256,7 @@ fn metadata_propagates_through_variable_assignment() {
 #[test]
 fn metadata_merge_with_default_is_identity() {
     // x + 1: merge(x_meta, DEFAULT) should equal x_meta
-    let input_meta = meta(&["src"], Some(&["viewer"]), &["tag"]);
+    let input_meta = meta(Some(&["src"]), Some(&["viewer"]), Some(&["tag"]));
     let input = AnnotatedObject::new(MontyObject::Int(10), Some(input_meta.clone()));
     let (value, out_meta) = run_with_meta("x + 1", vec!["x"], vec![input]);
     assert_eq!(value, MontyObject::Int(11));
@@ -219,8 +266,8 @@ fn metadata_merge_with_default_is_identity() {
 #[test]
 fn metadata_propagates_through_fstring() {
     // f-string merges metadata from all interpolated values
-    let meta_a = meta(&["src_a"], None, &[]);
-    let meta_b = meta(&["src_b"], None, &[]);
+    let meta_a = meta(Some(&["src_a"]), None, Some(&[]));
+    let meta_b = meta(Some(&["src_b"]), None, Some(&[]));
     let input_a = AnnotatedObject::new(MontyObject::String("hello".to_string()), Some(meta_a));
     let input_b = AnnotatedObject::new(MontyObject::String("world".to_string()), Some(meta_b));
     let code = "f'{a} {b}'";
@@ -229,7 +276,7 @@ fn metadata_propagates_through_fstring() {
     let out = out_meta.expect("merged metadata from f-string parts");
     assert_eq!(
         out.producers,
-        BTreeSet::from(["src_a".to_string(), "src_b".to_string()])
+        Some(BTreeSet::from(["src_a".to_string(), "src_b".to_string()]))
     );
 }
 
@@ -247,8 +294,8 @@ fn metadata_no_metadata_inputs_produce_none_output() {
 fn metadata_list_input_preserves_element_metadata() {
     // A list input where each element has distinct metadata should preserve
     // per-element metadata through a round-trip: input → interpreter → output.
-    let meta_a = meta(&["src_a"], None, &[]);
-    let meta_b = meta(&["src_b"], Some(&["admin"]), &["pii"]);
+    let meta_a = meta(Some(&["src_a"]), None, Some(&[]));
+    let meta_b = meta(Some(&["src_b"]), Some(&["admin"]), Some(&["pii"]));
     let input_list = MontyObject::List(vec![
         AnnotatedObject::new(MontyObject::Int(1), Some(meta_a.clone())),
         AnnotatedObject::new(MontyObject::Int(2), Some(meta_b.clone())),
@@ -288,7 +335,7 @@ fn metadata_list_element_no_metadata_roundtrips_as_none() {
 #[test]
 fn metadata_list_mixed_some_none_element_metadata() {
     // A mix of elements with and without metadata should preserve each correctly.
-    let meta_a = meta(&["secret"], Some(&["admin"]), &["classified"]);
+    let meta_a = meta(Some(&["secret"]), Some(&["admin"]), Some(&["classified"]));
     let input_list = MontyObject::List(vec![
         AnnotatedObject::new(MontyObject::Int(1), Some(meta_a.clone())),
         AnnotatedObject::new(MontyObject::Int(2), None),
@@ -309,8 +356,8 @@ fn metadata_list_mixed_some_none_element_metadata() {
 
 #[test]
 fn metadata_tuple_input_preserves_element_metadata() {
-    let meta_a = meta(&["src_a"], None, &[]);
-    let meta_b = meta(&["src_b"], None, &["tag"]);
+    let meta_a = meta(Some(&["src_a"]), None, Some(&[]));
+    let meta_b = meta(Some(&["src_b"]), None, Some(&["tag"]));
     let input_tuple = MontyObject::Tuple(vec![
         AnnotatedObject::new(MontyObject::Int(10), Some(meta_a.clone())),
         AnnotatedObject::new(MontyObject::String("hi".to_string()), Some(meta_b.clone())),
@@ -332,8 +379,8 @@ fn metadata_tuple_input_preserves_element_metadata() {
 #[test]
 fn metadata_dict_input_preserves_key_and_value_metadata() {
     use monty::AnnotatedDictPairs;
-    let meta_key = meta(&["key_src"], None, &[]);
-    let meta_val = meta(&["val_src"], Some(&["viewer"]), &["sensitive"]);
+    let meta_key = meta(Some(&["key_src"]), None, Some(&[]));
+    let meta_val = meta(Some(&["val_src"]), Some(&["viewer"]), Some(&["sensitive"]));
     let input_dict = MontyObject::Dict(AnnotatedDictPairs(vec![(
         AnnotatedObject::new(MontyObject::String("k".to_string()), Some(meta_key.clone())),
         AnnotatedObject::new(MontyObject::Int(42), Some(meta_val.clone())),
@@ -356,7 +403,7 @@ fn metadata_dict_input_preserves_key_and_value_metadata() {
 #[test]
 fn metadata_nested_list_preserves_inner_element_metadata() {
     // A list containing a list: inner elements should preserve their metadata.
-    let meta_inner = meta(&["deep_source"], None, &["nested"]);
+    let meta_inner = meta(Some(&["deep_source"]), None, Some(&["nested"]));
     let inner_list = MontyObject::List(vec![AnnotatedObject::new(
         MontyObject::Int(99),
         Some(meta_inner.clone()),
@@ -384,7 +431,7 @@ fn metadata_nested_list_preserves_inner_element_metadata() {
 fn metadata_list_indexing_extracts_element_metadata() {
     // Extracting an element from a list via indexing should propagate that
     // element's metadata to the result, not the container's.
-    let meta_elem = meta(&["elem_src"], None, &["tagged"]);
+    let meta_elem = meta(Some(&["elem_src"]), None, Some(&["tagged"]));
     let input_list = MontyObject::List(vec![
         AnnotatedObject::new(MontyObject::Int(10), None),
         AnnotatedObject::new(MontyObject::Int(20), Some(meta_elem.clone())),
@@ -399,7 +446,7 @@ fn metadata_list_indexing_extracts_element_metadata() {
 #[test]
 fn metadata_list_append_preserves_existing_element_metadata() {
     // Appending to a list (via Python code) should not disturb existing elements' metadata.
-    let meta_a = meta(&["src_a"], None, &[]);
+    let meta_a = meta(Some(&["src_a"]), None, Some(&[]));
     let expected_meta = meta_a.clone();
     let input_list = MontyObject::List(vec![AnnotatedObject::new(MontyObject::Int(1), Some(meta_a))]);
     let input = AnnotatedObject::from(input_list);
@@ -422,8 +469,8 @@ fn metadata_list_append_preserves_existing_element_metadata() {
 #[test]
 fn metadata_unpacking_preserves_element_metadata() {
     // Unpacking a list should propagate each element's metadata to its variable.
-    let meta_a = meta(&["src_a"], None, &[]);
-    let meta_b = meta(&["src_b"], None, &[]);
+    let meta_a = meta(Some(&["src_a"]), None, Some(&[]));
+    let meta_b = meta(Some(&["src_b"]), None, Some(&[]));
     let input_list = MontyObject::List(vec![
         AnnotatedObject::new(MontyObject::Int(1), Some(meta_a)),
         AnnotatedObject::new(MontyObject::Int(2), Some(meta_b.clone())),
@@ -441,8 +488,8 @@ fn metadata_unpacking_preserves_element_metadata() {
 #[test]
 fn metadata_star_args_propagates_to_function_params() {
     // f(*args) should propagate per-element metadata from the args tuple to parameters
-    let meta_a = meta(&["src_a"], None, &[]);
-    let meta_b = meta(&["src_b"], None, &["tag"]);
+    let meta_a = meta(Some(&["src_a"]), None, Some(&[]));
+    let meta_b = meta(Some(&["src_b"]), None, Some(&["tag"]));
     let input_a = AnnotatedObject::new(MontyObject::Int(10), Some(meta_a));
     let input_b = AnnotatedObject::new(MontyObject::Int(20), Some(meta_b));
 
@@ -457,9 +504,9 @@ fn metadata_star_args_propagates_to_function_params() {
     let out = out_meta.expect("merged metadata from *args");
     assert_eq!(
         out.producers,
-        BTreeSet::from(["src_a".to_string(), "src_b".to_string()])
+        Some(BTreeSet::from(["src_a".to_string(), "src_b".to_string()]))
     );
-    assert_eq!(out.tags, BTreeSet::from(["tag".to_string()]));
+    assert_eq!(out.tags, Some(BTreeSet::from(["tag".to_string()])));
 }
 
 // === dict merge / dict_update metadata ===
@@ -468,7 +515,7 @@ fn metadata_star_args_propagates_to_function_params() {
 fn metadata_dict_update_preserves_value_metadata() {
     // {**d} should preserve per-key and per-value metadata from the source dict
     use monty::AnnotatedDictPairs;
-    let meta_val = meta(&["api"], None, &["sensitive"]);
+    let meta_val = meta(Some(&["api"]), None, Some(&["sensitive"]));
     let input_dict = MontyObject::Dict(AnnotatedDictPairs(vec![(
         AnnotatedObject::new(MontyObject::String("key".to_string()), None),
         AnnotatedObject::new(MontyObject::Int(42), Some(meta_val.clone())),
@@ -487,8 +534,8 @@ fn metadata_dict_update_preserves_value_metadata() {
 #[test]
 fn metadata_list_extend_preserves_element_metadata() {
     // [*x] should preserve per-element metadata from the source list
-    let meta_a = meta(&["src_a"], None, &[]);
-    let meta_b = meta(&["src_b"], None, &[]);
+    let meta_a = meta(Some(&["src_a"]), None, Some(&[]));
+    let meta_b = meta(Some(&["src_b"]), None, Some(&[]));
     let input_list = MontyObject::List(vec![
         AnnotatedObject::new(MontyObject::Int(1), Some(meta_a.clone())),
         AnnotatedObject::new(MontyObject::Int(2), Some(meta_b.clone())),
@@ -512,7 +559,7 @@ fn metadata_list_extend_preserves_element_metadata() {
 #[test]
 fn metadata_list_to_tuple_preserves_element_metadata() {
     // (*x,) goes through ListToTuple, element metadata should survive
-    let meta_a = meta(&["src"], None, &["tagged"]);
+    let meta_a = meta(Some(&["src"]), None, Some(&["tagged"]));
     let input_list = MontyObject::List(vec![
         AnnotatedObject::new(MontyObject::Int(1), Some(meta_a.clone())),
         AnnotatedObject::new(MontyObject::Int(2), None),
@@ -535,7 +582,7 @@ fn metadata_list_to_tuple_preserves_element_metadata() {
 #[test]
 fn metadata_string_unpack_inherits_string_metadata() {
     // Unpacking a string should give each char the string's metadata
-    let input_meta = meta(&["api_response"], None, &["external"]);
+    let input_meta = meta(Some(&["api_response"]), None, Some(&["external"]));
     let input = AnnotatedObject::new(MontyObject::String("ab".to_string()), Some(input_meta.clone()));
 
     let code = "a, b = x\na";
@@ -547,7 +594,7 @@ fn metadata_string_unpack_inherits_string_metadata() {
 #[test]
 fn metadata_string_star_unpack_inherits_string_metadata() {
     // first, *rest = string should give each char the string's metadata
-    let input_meta = meta(&["src"], None, &[]);
+    let input_meta = meta(Some(&["src"]), None, Some(&[]));
     let input = AnnotatedObject::new(MontyObject::String("abc".to_string()), Some(input_meta.clone()));
 
     let code = "first, *rest = x\nfirst";
@@ -562,7 +609,7 @@ fn metadata_string_star_unpack_inherits_string_metadata() {
 fn metadata_merge_only_one_operand_has_metadata() {
     // When only one operand has metadata, result should carry that metadata
     // (merge with DEFAULT is identity)
-    let input_meta = meta(&["src"], Some(&["viewer"]), &["tag"]);
+    let input_meta = meta(Some(&["src"]), Some(&["viewer"]), Some(&["tag"]));
     let input_a = AnnotatedObject::new(MontyObject::Int(10), Some(input_meta.clone()));
     let input_b = AnnotatedObject::new(MontyObject::Int(5), None);
 

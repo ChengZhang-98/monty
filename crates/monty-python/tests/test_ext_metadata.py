@@ -25,13 +25,13 @@ def test_object_metadata_construction():
 def test_object_metadata_defaults():
     meta = pydantic_monty.ObjectMetadata()
     assert meta.producers == snapshot(frozenset())
-    assert meta.consumers is None
+    assert meta.consumers is pydantic_monty.UNIVERSAL
     assert meta.tags == snapshot(frozenset())
 
 
 def test_object_metadata_universal_consumers():
     meta = pydantic_monty.ObjectMetadata(producers=frozenset({'src'}))
-    assert meta.consumers is None
+    assert meta.consumers is pydantic_monty.UNIVERSAL
 
 
 def test_object_metadata_equality():
@@ -341,8 +341,9 @@ def test_annotated_args_no_metadata():
     annotated = snap.annotated_args
     assert len(annotated) == snapshot(1)
     assert annotated[0].value == snapshot(42)
-    # default metadata: empty producers, universal consumers (None)
+    # default metadata: empty producers, universal consumers (UNIVERSAL)
     assert annotated[0].metadata.producers == snapshot(frozenset())
+    assert annotated[0].metadata.consumers is pydantic_monty.UNIVERSAL
 
 
 def test_annotated_args_metadata_survives_serialization():
@@ -372,3 +373,119 @@ def test_annotated_args_metadata_survives_serialization():
     assert annotated[0].metadata.producers == snapshot(frozenset({'vault'}))
     assert annotated[0].metadata.consumers == snapshot(frozenset({'internal'}))
     assert annotated[0].metadata.tags == snapshot(frozenset({'secret'}))
+
+
+# === UNIVERSAL sentinel ===
+
+
+def test_universal_singleton_identity():
+    """UNIVERSAL is a singleton — identity check should pass."""
+    assert pydantic_monty.UNIVERSAL is pydantic_monty.UNIVERSAL
+
+
+def test_universal_isinstance():
+    """UNIVERSAL is an instance of UniversalSet."""
+    assert isinstance(pydantic_monty.UNIVERSAL, pydantic_monty.UniversalSet)
+
+
+def test_universal_contains():
+    """Membership in UNIVERSAL always returns True."""
+    assert 'anything' in pydantic_monty.UNIVERSAL
+    assert '' in pydantic_monty.UNIVERSAL
+
+
+def test_universal_bool():
+    """bool(UNIVERSAL) is True."""
+    assert bool(pydantic_monty.UNIVERSAL) is True
+
+
+def test_universal_repr():
+    """repr(UNIVERSAL) is 'UNIVERSAL'."""
+    assert repr(pydantic_monty.UNIVERSAL) == snapshot('UNIVERSAL')
+
+
+def test_universal_equality():
+    """UNIVERSAL compares equal to itself but not to other types."""
+    assert pydantic_monty.UNIVERSAL == pydantic_monty.UNIVERSAL
+    assert pydantic_monty.UNIVERSAL != frozenset()
+    assert pydantic_monty.UNIVERSAL != None  # noqa: E711
+
+
+def test_universal_iter_raises():
+    """Iterating UNIVERSAL raises TypeError."""
+    import pytest
+
+    with pytest.raises(TypeError):
+        iter(pydantic_monty.UNIVERSAL)  # pyright: ignore[reportCallIssue,reportArgumentType]
+
+
+def test_universal_len_raises():
+    """len(UNIVERSAL) raises TypeError."""
+    import pytest
+
+    with pytest.raises(TypeError):
+        len(pydantic_monty.UNIVERSAL)  # pyright: ignore[reportArgumentType]
+
+
+def test_object_metadata_explicit_universal_consumers():
+    """Passing UNIVERSAL explicitly for consumers should work."""
+    meta = pydantic_monty.ObjectMetadata(consumers=pydantic_monty.UNIVERSAL)
+    assert meta.consumers is pydantic_monty.UNIVERSAL
+
+
+def test_object_metadata_explicit_universal_producers():
+    """Passing UNIVERSAL for producers should work."""
+    meta = pydantic_monty.ObjectMetadata(producers=pydantic_monty.UNIVERSAL)
+    assert meta.producers is pydantic_monty.UNIVERSAL
+    assert meta.consumers is pydantic_monty.UNIVERSAL  # default
+    assert meta.tags == snapshot(frozenset())
+
+
+def test_object_metadata_explicit_universal_tags():
+    """Passing UNIVERSAL for tags should work."""
+    meta = pydantic_monty.ObjectMetadata(tags=pydantic_monty.UNIVERSAL)
+    assert meta.tags is pydantic_monty.UNIVERSAL
+    assert meta.producers == snapshot(frozenset())
+
+
+def test_object_metadata_rejects_invalid_type():
+    """Passing an invalid type raises TypeError."""
+    import pytest
+
+    with pytest.raises(TypeError):
+        pydantic_monty.ObjectMetadata(producers='not_a_frozenset')  # pyright: ignore[reportArgumentType]
+
+
+def test_object_metadata_universal_repr():
+    """Repr with UNIVERSAL fields shows UNIVERSAL, not None."""
+    meta = pydantic_monty.ObjectMetadata(producers=pydantic_monty.UNIVERSAL)
+    r = repr(meta)
+    assert 'UNIVERSAL' in r
+
+
+def test_object_metadata_universal_equality():
+    """Two ObjectMetadata with UNIVERSAL in same positions are equal."""
+    a = pydantic_monty.ObjectMetadata(producers=pydantic_monty.UNIVERSAL)
+    b = pydantic_monty.ObjectMetadata(producers=pydantic_monty.UNIVERSAL)
+    assert a == b
+
+
+def test_object_metadata_universal_vs_empty_not_equal():
+    """UNIVERSAL and frozenset() are not equal for any field."""
+    a = pydantic_monty.ObjectMetadata(producers=pydantic_monty.UNIVERSAL)
+    b = pydantic_monty.ObjectMetadata(producers=frozenset())
+    assert a != b
+
+
+def test_universal_producers_roundtrip_through_interpreter():
+    """UNIVERSAL producers should survive a round-trip through the interpreter."""
+    meta = pydantic_monty.ObjectMetadata(
+        producers=pydantic_monty.UNIVERSAL,
+        consumers=frozenset({'admin'}),
+    )
+    m = pydantic_monty.Monty('x', inputs=['x'])
+    snap = m.start(inputs={'x': pydantic_monty.AnnotatedValue(42, meta)})
+    assert isinstance(snap, pydantic_monty.MontyComplete)
+    assert snap.metadata is not None
+    assert snap.metadata.producers is pydantic_monty.UNIVERSAL
+    assert snap.metadata.consumers == snapshot(frozenset({'admin'}))

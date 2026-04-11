@@ -352,18 +352,18 @@ use std::collections::BTreeSet;
 
 use monty::ObjectMetadata;
 
-fn meta(producers: &[&str], consumers: Option<&[&str]>, tags: &[&str]) -> ObjectMetadata {
+fn meta(producers: Option<&[&str]>, consumers: Option<&[&str]>, tags: Option<&[&str]>) -> ObjectMetadata {
     ObjectMetadata {
-        producers: producers.iter().map(ToString::to_string).collect(),
+        producers: producers.map(|p| p.iter().map(ToString::to_string).collect()),
         consumers: consumers.map(|c| c.iter().map(ToString::to_string).collect()),
-        tags: tags.iter().map(ToString::to_string).collect(),
+        tags: tags.map(|t| t.iter().map(ToString::to_string).collect()),
     }
 }
 
 #[test]
 fn repl_metadata_input_passthrough() {
     // An annotated input passed through should retain its metadata
-    let input_meta = meta(&["src"], Some(&["admin"]), &["pii"]);
+    let input_meta = meta(Some(&["src"]), Some(&["admin"]), Some(&["pii"]));
     let input = AnnotatedObject::new(MontyObject::Int(42), Some(input_meta.clone()));
     let repl = MontyRepl::new("repl.py", NoLimitTracker);
     let progress = repl
@@ -390,8 +390,8 @@ fn repl_metadata_no_metadata_returns_none() {
 #[test]
 fn repl_metadata_merge_on_binary_op() {
     // a + b should merge metadata
-    let meta_a = meta(&["src_a"], Some(&["c1", "c2"]), &[]);
-    let meta_b = meta(&["src_b"], Some(&["c2", "c3"]), &[]);
+    let meta_a = meta(Some(&["src_a"]), Some(&["c1", "c2"]), Some(&[]));
+    let meta_b = meta(Some(&["src_b"]), Some(&["c2", "c3"]), Some(&[]));
     let repl = MontyRepl::new("repl.py", NoLimitTracker);
     let progress = repl
         .feed_start(
@@ -414,7 +414,7 @@ fn repl_metadata_merge_on_binary_op() {
     let out = result.metadata.expect("merged metadata should be present");
     assert_eq!(
         out.producers,
-        BTreeSet::from(["src_a".to_string(), "src_b".to_string()])
+        Some(BTreeSet::from(["src_a".to_string(), "src_b".to_string()]))
     );
     assert_eq!(out.consumers, Some(BTreeSet::from(["c2".to_string()])));
 }
@@ -423,7 +423,7 @@ fn repl_metadata_merge_on_binary_op() {
 fn repl_metadata_persists_across_snippets() {
     // Metadata on a global should survive across multiple feed_run calls
     let mut repl = MontyRepl::new("repl.py", NoLimitTracker);
-    let input_meta = meta(&["vault"], None, &["secret"]);
+    let input_meta = meta(Some(&["vault"]), None, Some(&["secret"]));
     let input = AnnotatedObject::new(MontyObject::Int(10), Some(input_meta.clone()));
 
     // First snippet: store annotated input
