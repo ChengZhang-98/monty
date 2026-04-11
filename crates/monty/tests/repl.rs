@@ -170,7 +170,7 @@ fn repl_start_external_call_resumes_to_updated_repl() {
     let progress = repl.feed_start("ext_fn(41) + 1", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "ext_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(41)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(41))]);
 
     let progress = call.resume(MontyObject::Int(41), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
@@ -190,7 +190,7 @@ fn repl_progress_dump_load_roundtrip() {
     let loaded: ReplProgress<NoLimitTracker> = ReplProgress::load(&bytes).unwrap();
 
     let call = loaded.into_function_call().expect("expected function call");
-    assert_eq!(call.args, vec![MontyObject::Int(20)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(20))]);
 
     let progress = call.resume(MontyObject::Int(20), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");
@@ -312,7 +312,7 @@ fn repl_dataclass_method_call_yields_function_call_with_method_flag() {
     assert_eq!(call.function_name, "sum");
     assert!(call.method_call, "should be a method call");
     // First arg should be the dataclass instance (self)
-    assert!(matches!(&call.args[0], MontyObject::Dataclass { name, .. } if name == "Point"));
+    assert!(matches!(&call.args[0].value, MontyObject::Dataclass { name, .. } if name == "Point"));
 
     // Resume with a return value (sum of x + y = 3)
     let progress = call.resume(MontyObject::Int(3), PrintWriter::Stdout).unwrap();
@@ -335,7 +335,7 @@ fn repl_start_new_external_function_in_later_block() {
     let progress = repl.feed_start("new_ext(y)", vec![], PrintWriter::Stdout).unwrap();
     let call = progress.into_function_call().expect("expected function call");
     assert_eq!(call.function_name, "new_ext");
-    assert_eq!(call.args, vec![MontyObject::Int(15)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(15))]);
 
     let progress = call.resume(MontyObject::Int(100), PrintWriter::Stdout).unwrap();
     let (mut repl, value) = progress.into_complete().expect("expected completion");

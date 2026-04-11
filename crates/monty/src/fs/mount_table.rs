@@ -16,7 +16,7 @@ use super::{
     mount_mode::MountMode,
     path_security::normalize_virtual_path,
 };
-use crate::{MontyObject, os::OsFunction};
+use crate::{MontyObject, metadata::AnnotatedObject, os::OsFunction};
 
 /// A collection of mount points mapping virtual paths to host directories.
 ///
@@ -128,8 +128,8 @@ impl MountTable {
     pub fn handle_os_call(
         &mut self,
         function: OsFunction,
-        args: &[MontyObject],
-        kwargs: &[(MontyObject, MontyObject)],
+        args: &[AnnotatedObject],
+        kwargs: &[(AnnotatedObject, AnnotatedObject)],
     ) -> Option<Result<MontyObject, MountError>> {
         if !function.is_filesystem() {
             return None;

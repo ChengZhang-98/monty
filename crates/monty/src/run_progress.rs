@@ -140,10 +140,10 @@ impl<T: ResourceTracker + DeserializeOwned> RunProgress<T> {
 pub struct FunctionCall<T: ResourceTracker> {
     /// The name of the function or method being called.
     pub function_name: String,
-    /// The positional arguments passed to the function.
-    pub args: Vec<MontyObject>,
-    /// The keyword arguments passed to the function (key, value pairs).
-    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// The positional arguments passed to the function, each carrying optional metadata.
+    pub args: Vec<AnnotatedObject>,
+    /// The keyword arguments passed to the function (key, value pairs), each carrying optional metadata.
+    pub kwargs: Vec<(AnnotatedObject, AnnotatedObject)>,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
     /// Whether this is a dataclass method call (first arg is `self`).
@@ -156,8 +156,8 @@ impl<T: ResourceTracker> FunctionCall<T> {
     /// Creates a new `FunctionCall` from its parts.
     fn new(
         function_name: String,
-        args: Vec<MontyObject>,
-        kwargs: Vec<(MontyObject, MontyObject)>,
+        args: Vec<AnnotatedObject>,
+        kwargs: Vec<(AnnotatedObject, AnnotatedObject)>,
         call_id: u32,
         method_call: bool,
         snapshot: Snapshot<T>,
@@ -226,10 +226,10 @@ impl<T: ResourceTracker> FunctionCall<T> {
 pub struct OsCall<T: ResourceTracker> {
     /// The OS function to execute.
     pub function: OsFunction,
-    /// The positional arguments for the OS function.
-    pub args: Vec<MontyObject>,
-    /// The keyword arguments passed to the function (key, value pairs).
-    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// The positional arguments for the OS function, each carrying optional metadata.
+    pub args: Vec<AnnotatedObject>,
+    /// The keyword arguments passed to the function (key, value pairs), each carrying optional metadata.
+    pub kwargs: Vec<(AnnotatedObject, AnnotatedObject)>,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
     /// Internal execution snapshot.
@@ -240,8 +240,8 @@ impl<T: ResourceTracker> OsCall<T> {
     /// Creates a new `OsCall` from its parts.
     fn new(
         function: OsFunction,
-        args: Vec<MontyObject>,
-        kwargs: Vec<(MontyObject, MontyObject)>,
+        args: Vec<AnnotatedObject>,
+        kwargs: Vec<(AnnotatedObject, AnnotatedObject)>,
         call_id: u32,
         snapshot: Snapshot<T>,
     ) -> Self {
@@ -654,16 +654,16 @@ pub(crate) enum ConvertedExit {
     /// External function call or dataclass method call.
     FunctionCall {
         function_name: String,
-        args: Vec<MontyObject>,
-        kwargs: Vec<(MontyObject, MontyObject)>,
+        args: Vec<AnnotatedObject>,
+        kwargs: Vec<(AnnotatedObject, AnnotatedObject)>,
         call_id: u32,
         method_call: bool,
     },
     /// OS-level operation.
     OsCall {
         function: OsFunction,
-        args: Vec<MontyObject>,
-        kwargs: Vec<(MontyObject, MontyObject)>,
+        args: Vec<AnnotatedObject>,
+        kwargs: Vec<(AnnotatedObject, AnnotatedObject)>,
         call_id: u32,
     },
     /// All async tasks are blocked waiting for external futures.
@@ -705,11 +705,11 @@ pub(crate) fn convert_frame_exit(
             ..
         }) => {
             let name = function_name.into_string(vm.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(vm);
+            let (args_ann, kwargs_ann) = args.into_annotated_objects(vm);
             ConvertedExit::FunctionCall {
                 function_name: name,
-                args: args_py,
-                kwargs: kwargs_py,
+                args: args_ann,
+                kwargs: kwargs_ann,
                 call_id: call_id.raw(),
                 method_call: false,
             }
@@ -719,11 +719,11 @@ pub(crate) fn convert_frame_exit(
             args,
             call_id,
         }) => {
-            let (args_py, kwargs_py) = args.into_py_objects(vm);
+            let (args_ann, kwargs_ann) = args.into_annotated_objects(vm);
             ConvertedExit::OsCall {
                 function,
-                args: args_py,
-                kwargs: kwargs_py,
+                args: args_ann,
+                kwargs: kwargs_ann,
                 call_id: call_id.raw(),
             }
         }
@@ -733,11 +733,11 @@ pub(crate) fn convert_frame_exit(
             call_id,
         }) => {
             let name = method_name.into_string(vm.interns);
-            let (args_py, kwargs_py) = args.into_py_objects(vm);
+            let (args_ann, kwargs_ann) = args.into_annotated_objects(vm);
             ConvertedExit::FunctionCall {
                 function_name: name,
-                args: args_py,
-                kwargs: kwargs_py,
+                args: args_ann,
+                kwargs: kwargs_ann,
                 call_id: call_id.raw(),
                 method_call: true,
             }

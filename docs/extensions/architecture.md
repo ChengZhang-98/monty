@@ -167,9 +167,15 @@ pub struct PyFunctionSnapshot {
     print_callback: Option<Py<PyAny>>,       // ← threaded through chain
     dc_registry: DcRegistry,                 // ← threaded through chain
     script_name: String,                     // ← threaded through chain
-    // ... public fields (function_name, args, kwargs, etc.)
+    // ... public fields (function_name, args, kwargs, call_id, etc.)
+    args_metadata: Vec<Option<ObjectMetadata>>,                          // ← per-arg metadata
+    kwargs_metadata: Vec<(Option<ObjectMetadata>, Option<ObjectMetadata>)>, // ← per-kwarg metadata
 }
 ```
+
+The `args` and `kwargs` properties expose plain values; `annotated_args` and
+`annotated_kwargs` bundle each value with its `AnnotatedValue` for metadata
+access.
 
 The `print_callback: Option<Py<PyAny>>` appears in **~20 locations** across
 `monty_cls.rs`, `repl.rs`, and `async_dispatch.rs`. Any change to its type
@@ -219,7 +225,15 @@ PyO3 classes can't be generic. The codebase uses enum wrappers:
 
 ```rust
 // Core: generic over resource tracker
-pub struct FunctionCall<T: ResourceTracker> { ... }
+// args/kwargs carry AnnotatedObject (value + optional metadata)
+pub struct FunctionCall<T: ResourceTracker> {
+    pub function_name: String,
+    pub args: Vec<AnnotatedObject>,
+    pub kwargs: Vec<(AnnotatedObject, AnnotatedObject)>,
+    pub call_id: u32,
+    pub method_call: bool,
+    snapshot: Snapshot<T>,
+}
 
 // PyO3-facing: enum over both tracker types
 enum EitherFunctionSnapshot {

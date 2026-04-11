@@ -8,6 +8,7 @@ use crate::{
     expressions::{ExprLoc, Identifier},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapGuard},
     intern::{Interns, StringId},
+    metadata::{AnnotatedObject, MetadataId},
     parse::ParseError,
     types::{Dict, dict::DictIntoIter},
     value::Value,
@@ -307,22 +308,53 @@ impl ArgValues {
         ExcType::type_error_no_kwargs(method_name)
     }
 
-    /// Converts the arguments into a Vec of MontyObjects.
+    /// Converts the arguments into annotated objects with per-argument metadata.
     ///
-    /// This is used when passing arguments to external functions.
-    pub fn into_py_objects(
+    /// This is used when passing arguments to external functions. Positional arg
+    /// metadata is read from `vm.pending_arg_metadata` (populated by `pop_n_args`
+    /// or the KW/extended call opcodes). Kwarg metadata is read from
+    /// `vm.pending_kwarg_metadata` for inline kwargs, or from the dict's own
+    /// per-entry metadata for `KwargsValues::Dict`.
+    pub fn into_annotated_objects(
         self,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
-    ) -> (Vec<MontyObject>, Vec<(MontyObject, MontyObject)>) {
+    ) -> (Vec<AnnotatedObject>, Vec<(AnnotatedObject, AnnotatedObject)>) {
+        // Drain pending metadata vectors — they are consumed exactly once per call.
+        let pos_meta: Vec<MetadataId> = vm.pending_arg_metadata.drain(..).collect();
+
         match self {
             Self::Empty => (vec![], vec![]),
-            Self::One(a) => (vec![MontyObject::new(a, vm)], vec![]),
-            Self::Two(a1, a2) => (vec![MontyObject::new(a1, vm), MontyObject::new(a2, vm)], vec![]),
-            Self::Kwargs(kwargs) => (vec![], kwargs.into_py_objects(vm)),
-            Self::ArgsKargs { args, kwargs } => (
-                args.into_iter().map(|v| MontyObject::new(v, vm)).collect(),
-                kwargs.into_py_objects(vm),
-            ),
+            Self::One(a) => {
+                let meta = pos_meta.first().copied().unwrap_or_default();
+                let obj_meta = vm.metadata_store.to_object_metadata(meta);
+                (vec![AnnotatedObject::new(MontyObject::new(a, vm), obj_meta)], vec![])
+            }
+            Self::Two(a1, a2) => {
+                let m1 = pos_meta.first().copied().unwrap_or_default();
+                let m2 = pos_meta.get(1).copied().unwrap_or_default();
+                let om1 = vm.metadata_store.to_object_metadata(m1);
+                let om2 = vm.metadata_store.to_object_metadata(m2);
+                (
+                    vec![
+                        AnnotatedObject::new(MontyObject::new(a1, vm), om1),
+                        AnnotatedObject::new(MontyObject::new(a2, vm), om2),
+                    ],
+                    vec![],
+                )
+            }
+            Self::Kwargs(kwargs) => (vec![], kwargs.into_annotated_objects(vm)),
+            Self::ArgsKargs { args, kwargs } => {
+                let pos: Vec<AnnotatedObject> = args
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        let meta = pos_meta.get(i).copied().unwrap_or_default();
+                        let obj_meta = vm.metadata_store.to_object_metadata(meta);
+                        AnnotatedObject::new(MontyObject::new(v, vm), obj_meta)
+                    })
+                    .collect();
+                (pos, kwargs.into_annotated_objects(vm))
+            }
         }
     }
 
@@ -463,24 +495,45 @@ impl KwargsValues {
         self.len() == 0
     }
 
-    /// Converts the arguments into a Vec of MontyObjects.
+    /// Converts the kwargs into annotated (key, value) pairs with per-entry metadata.
     ///
-    /// This is used when passing arguments to external functions.
-    fn into_py_objects(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Vec<(MontyObject, MontyObject)> {
+    /// For `Inline` kwargs, value metadata is read from `vm.pending_kwarg_metadata`;
+    /// keys are interned strings with DEFAULT metadata. For `Dict` kwargs, metadata
+    /// comes from the dict's own per-entry metadata.
+    fn into_annotated_objects(
+        self,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
+    ) -> Vec<(AnnotatedObject, AnnotatedObject)> {
         match self {
             Self::Empty => vec![],
-            Self::Inline(kvs) => kvs
-                .into_iter()
-                .map(|(k, v)| {
-                    let key = MontyObject::String(vm.interns.get_str(k).to_owned());
-                    let value = MontyObject::new(v, vm);
-                    (key, value)
-                })
-                .collect(),
-            Self::Dict(dict) => dict
-                .into_iter()
-                .map(|(k, v)| (MontyObject::new(k, vm), MontyObject::new(v, vm)))
-                .collect(),
+            Self::Inline(kvs) => {
+                let kw_meta: Vec<MetadataId> = vm.pending_kwarg_metadata.drain(..).collect();
+                kvs.into_iter()
+                    .enumerate()
+                    .map(|(i, (k, v))| {
+                        let key = MontyObject::String(vm.interns.get_str(k).to_owned());
+                        let val_meta_id = kw_meta.get(i).copied().unwrap_or_default();
+                        let val_meta = vm.metadata_store.to_object_metadata(val_meta_id);
+                        let value = MontyObject::new(v, vm);
+                        // Key metadata is always DEFAULT for inline kwargs (string literals)
+                        (AnnotatedObject::new(key, None), AnnotatedObject::new(value, val_meta))
+                    })
+                    .collect()
+            }
+            Self::Dict(dict) => {
+                // Dict carries its own per-entry metadata — drain pending (should be empty)
+                vm.pending_kwarg_metadata.clear();
+                dict.into_iter_with_metadata()
+                    .map(|(k, k_meta, v, v_meta)| {
+                        let k_obj_meta = vm.metadata_store.to_object_metadata(k_meta);
+                        let v_obj_meta = vm.metadata_store.to_object_metadata(v_meta);
+                        (
+                            AnnotatedObject::new(MontyObject::new(k, vm), k_obj_meta),
+                            AnnotatedObject::new(MontyObject::new(v, vm), v_obj_meta),
+                        )
+                    })
+                    .collect()
+            }
         }
     }
 

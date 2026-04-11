@@ -763,6 +763,44 @@ impl IntoIterator for Dict {
     }
 }
 
+/// Iterator over owned (key, key_meta, value, value_meta) tuples from a consumed dict.
+///
+/// Preserves per-entry metadata that [`DictIntoIter`] discards. Used when converting
+/// dict kwargs to [`AnnotatedObject`](crate::AnnotatedObject) at external call boundaries.
+pub(crate) struct DictIntoIterWithMeta(vec::IntoIter<DictEntry>);
+
+impl Iterator for DictIntoIterWithMeta {
+    type Item = (Value, MetadataId, Value, MetadataId);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|e| (e.key, e.key_meta, e.value, e.value_meta))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.0.size_hint()
+    }
+}
+
+impl ExactSizeIterator for DictIntoIterWithMeta {}
+
+impl DropWithHeap for DictIntoIterWithMeta {
+    fn drop_with_heap<H: ContainsHeap>(self, heap: &mut H) {
+        for (k, _, v, _) in self {
+            k.drop_with_heap(heap);
+            v.drop_with_heap(heap);
+        }
+    }
+}
+
+impl Dict {
+    /// Consumes the dict and returns an iterator over `(key, key_meta, value, value_meta)` tuples.
+    ///
+    /// Unlike the standard `IntoIterator` impl, this preserves per-entry metadata.
+    pub(crate) fn into_iter_with_metadata(self) -> DictIntoIterWithMeta {
+        DictIntoIterWithMeta(self.entries.into_iter())
+    }
+}
+
 /// `PyTrait` implementation for `HeapRead<'h, Dict>`.
 ///
 /// All methods access the dict data through short-lived borrows from the heap via

@@ -35,7 +35,7 @@ use crate::{
 };
 
 /// Current serialization format version. Incremented on breaking wire-format changes.
-const SERIALIZATION_VERSION: u16 = 1;
+const SERIALIZATION_VERSION: u16 = 2;
 
 /// Size of the wire-format header: 2 bytes version + 32 bytes SHA-256 hash.
 const HEADER_SIZE: usize = 2 + 32;

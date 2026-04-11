@@ -7,7 +7,7 @@
 use std::{fs, path::Path};
 
 use monty::{
-    MontyObject, OsFunction,
+    AnnotatedObject, MontyObject, OsFunction,
     fs::{MountError, MountMode, MountTable, OverlayState},
 };
 use tempfile::TempDir;
@@ -38,7 +38,7 @@ fn mount_at_mnt(tmpdir: &TempDir, mode: MountMode) -> MountTable {
 
 /// Shorthand: call handle_os_call with a single path argument.
 fn call(mt: &mut MountTable, func: OsFunction, path: &str) -> Option<Result<MontyObject, MountError>> {
-    mt.handle_os_call(func, &[MontyObject::Path(path.to_owned())], &[])
+    mt.handle_os_call(func, &[MontyObject::Path(path.to_owned()).into()], &[])
 }
 
 /// Shorthand: call handle_os_call with kwargs.
@@ -46,16 +46,22 @@ fn call_with_kwargs(
     mt: &mut MountTable,
     func: OsFunction,
     path: &str,
-    kwargs: &[(MontyObject, MontyObject)],
+    kwargs: &[(AnnotatedObject, AnnotatedObject)],
 ) -> Option<Result<MontyObject, MountError>> {
-    mt.handle_os_call(func, &[MontyObject::Path(path.to_owned())], kwargs)
+    mt.handle_os_call(func, &[MontyObject::Path(path.to_owned()).into()], kwargs)
 }
 
 /// Returns kwargs for `mkdir(parents=True, exist_ok=True)`.
-fn mkdir_parents_kwargs() -> Vec<(MontyObject, MontyObject)> {
+fn mkdir_parents_kwargs() -> Vec<(AnnotatedObject, AnnotatedObject)> {
     vec![
-        (MontyObject::String("parents".to_owned()), MontyObject::Bool(true)),
-        (MontyObject::String("exist_ok".to_owned()), MontyObject::Bool(true)),
+        (
+            MontyObject::String("parents".to_owned()).into(),
+            MontyObject::Bool(true).into(),
+        ),
+        (
+            MontyObject::String("exist_ok".to_owned()).into(),
+            MontyObject::Bool(true).into(),
+        ),
     ]
 }
 
@@ -77,7 +83,7 @@ fn assert_write_blocked(mt: &mut MountTable, func: OsFunction, path: &str) {
         OsFunction::WriteBytes => MontyObject::Bytes(b"attack".to_vec()),
         _ => MontyObject::None,
     };
-    let result = mt.handle_os_call(func, &[MontyObject::Path(path.to_owned()), content], &[]);
+    let result = mt.handle_os_call(func, &[MontyObject::Path(path.to_owned()).into(), content.into()], &[]);
     match result {
         Some(Err(MountError::PathEscape { .. } | MountError::NoMountPoint(_) | MountError::Io(_, _))) | None => {}
         Some(Ok(val)) => panic!("expected write blocked, got Ok({val:?}) for path: {path}"),
@@ -660,8 +666,8 @@ mod hard_link_tests {
             .handle_os_call(
                 OsFunction::WriteText,
                 &[
-                    MontyObject::Path("/mnt/broken_link.txt".to_owned()),
-                    MontyObject::String("safe".to_owned()),
+                    MontyObject::Path("/mnt/broken_link.txt".to_owned()).into(),
+                    MontyObject::String("safe".to_owned()).into(),
                 ],
                 &[],
             )
@@ -944,8 +950,8 @@ fn rename_traversal_src() {
     let result = mt.handle_os_call(
         OsFunction::Rename,
         &[
-            MontyObject::Path("/mnt/../etc/passwd".to_owned()),
-            MontyObject::Path("/mnt/stolen.txt".to_owned()),
+            MontyObject::Path("/mnt/../etc/passwd".to_owned()).into(),
+            MontyObject::Path("/mnt/stolen.txt".to_owned()).into(),
         ],
         &[],
     );
@@ -966,8 +972,8 @@ fn rename_traversal_dst() {
     let result = mt.handle_os_call(
         OsFunction::Rename,
         &[
-            MontyObject::Path("/mnt/hello.txt".to_owned()),
-            MontyObject::Path("/mnt/../escape.txt".to_owned()),
+            MontyObject::Path("/mnt/hello.txt".to_owned()).into(),
+            MontyObject::Path("/mnt/../escape.txt".to_owned()).into(),
         ],
         &[],
     );
@@ -1017,8 +1023,8 @@ fn rename_symlink_escape_overlay_read_text() {
     let rename_result = mt.handle_os_call(
         OsFunction::Rename,
         &[
-            MontyObject::Path("/mnt/escape_link".to_owned()),
-            MontyObject::Path("/mnt/renamed".to_owned()),
+            MontyObject::Path("/mnt/escape_link".to_owned()).into(),
+            MontyObject::Path("/mnt/renamed".to_owned()).into(),
         ],
         &[],
     );
@@ -1066,8 +1072,8 @@ fn rename_symlink_escape_overlay_read_bytes() {
     let rename_result = mt.handle_os_call(
         OsFunction::Rename,
         &[
-            MontyObject::Path("/mnt/escape_link".to_owned()),
-            MontyObject::Path("/mnt/renamed".to_owned()),
+            MontyObject::Path("/mnt/escape_link".to_owned()).into(),
+            MontyObject::Path("/mnt/renamed".to_owned()).into(),
         ],
         &[],
     );

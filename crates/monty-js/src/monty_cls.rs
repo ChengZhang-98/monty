@@ -46,9 +46,9 @@
 use std::{borrow::Cow, mem, ptr, result};
 
 use monty::{
-    fs::MountTable, ExcType, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException, MontyObject,
-    MontyRepl as CoreMontyRepl, MontyRun, NameLookup, NameLookupResult, NoLimitTracker, OsCall, PrintWriter,
-    PrintWriterCallback, ReplProgress, ResourceTracker, RunProgress,
+    fs::MountTable, AnnotatedObject, ExcType, ExtFunctionResult, FunctionCall, LimitedTracker, MontyException,
+    MontyObject, MontyRepl as CoreMontyRepl, MontyRun, NameLookup, NameLookupResult, NoLimitTracker, OsCall,
+    PrintWriter, PrintWriterCallback, ReplProgress, ResourceTracker, RunProgress,
 };
 use monty_type_checking::{type_check, SourceFile};
 use napi::{bindgen_prelude::*, sys::Status};
@@ -880,10 +880,10 @@ pub struct MontySnapshot {
     script_name: String,
     /// The name of the external function being called.
     function_name: String,
-    /// The positional arguments passed to the function (stored as MontyObject for serialization).
-    args: Vec<MontyObject>,
-    /// The keyword arguments passed to the function (stored as MontyObject pairs for serialization).
-    kwargs: Vec<(MontyObject, MontyObject)>,
+    /// The positional arguments passed to the function, each carrying optional metadata.
+    args: Vec<AnnotatedObject>,
+    /// The keyword arguments passed to the function (key, value pairs), each carrying optional metadata.
+    kwargs: Vec<(AnnotatedObject, AnnotatedObject)>,
     /// Optional print callback function.
     print_callback: Option<JsPrintCallbackRef>,
     /// Mount state carried from `start()` for use during `resume()`.
@@ -934,7 +934,7 @@ impl MontySnapshot {
     /// Returns the positional arguments passed to the external function.
     #[napi(getter)]
     pub fn args<'env>(&self, env: &'env Env) -> Result<Vec<JsMontyObject<'env>>> {
-        self.args.iter().map(|obj| monty_to_js(obj, env)).collect()
+        self.args.iter().map(|obj| monty_to_js(&obj.value, env)).collect()
     }
 
     /// Returns the keyword arguments passed to the external function as an object.
@@ -943,11 +943,11 @@ impl MontySnapshot {
         let mut obj = Object::new(env)?;
         for (k, v) in &self.kwargs {
             // Keys should be strings
-            let key = match k {
+            let key = match &k.value {
                 MontyObject::String(s) => s.clone(),
-                _ => format!("{k:?}"),
+                other => format!("{other:?}"),
             };
-            let js_value = monty_to_js(v, env)?;
+            let js_value = monty_to_js(&v.value, env)?;
             obj.set_named_property(&key, js_value)?;
         }
         Ok(obj)
@@ -1086,9 +1086,11 @@ impl MontySnapshot {
     /// Returns a string representation of the MontySnapshot.
     #[napi]
     pub fn repr(&self) -> String {
+        let args: Vec<&MontyObject> = self.args.iter().map(|a| &a.value).collect();
+        let kwargs: Vec<(&MontyObject, &MontyObject)> = self.kwargs.iter().map(|(k, v)| (&k.value, &v.value)).collect();
         format!(
             "MontySnapshot(scriptName='{}', functionName='{}', args={:?}, kwargs={:?})",
-            self.script_name, self.function_name, self.args, self.kwargs
+            self.script_name, self.function_name, args, kwargs
         )
     }
 }
@@ -1549,8 +1551,8 @@ struct SerializedSnapshot<'a> {
     snapshot: &'a EitherSnapshot,
     script_name: &'a str,
     function_name: &'a str,
-    args: &'a [MontyObject],
-    kwargs: &'a [(MontyObject, MontyObject)],
+    args: &'a [AnnotatedObject],
+    kwargs: &'a [(AnnotatedObject, AnnotatedObject)],
 }
 
 /// Owned version of `SerializedSnapshot` for deserialization.
@@ -1559,8 +1561,8 @@ struct SerializedSnapshotOwned {
     snapshot: EitherSnapshot,
     script_name: String,
     function_name: String,
-    args: Vec<MontyObject>,
-    kwargs: Vec<(MontyObject, MontyObject)>,
+    args: Vec<AnnotatedObject>,
+    kwargs: Vec<(AnnotatedObject, AnnotatedObject)>,
 }
 
 /// Serialization wrapper for `MontyNameLookup` using borrowed references.
@@ -1591,8 +1593,8 @@ fn call_external_function(
     env: &Env,
     external_functions: Option<&Object<'_>>,
     function_name: &str,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &[AnnotatedObject],
+    kwargs: &[(AnnotatedObject, AnnotatedObject)],
 ) -> Result<ExtFunctionResult> {
     // Get the external functions dict, or error if not provided
     let functions = external_functions.ok_or_else(|| {
@@ -1616,18 +1618,18 @@ fn call_external_function(
     // Convert positional arguments to JS
     let mut js_args: Vec<sys::napi_value> = Vec::with_capacity(args.len() + 1);
     for arg in args {
-        js_args.push(monty_to_js(arg, env)?.raw());
+        js_args.push(monty_to_js(&arg.value, env)?.raw());
     }
 
     // If we have kwargs, add them as a final object argument
     if !kwargs.is_empty() {
         let mut kwargs_obj = Object::new(env)?;
         for (key, value) in kwargs {
-            let key_str = match key {
+            let key_str = match &key.value {
                 MontyObject::String(s) => s.clone(),
-                _ => format!("{key:?}"),
+                other => format!("{other:?}"),
             };
-            kwargs_obj.set_named_property(&key_str, monty_to_js(value, env)?)?;
+            kwargs_obj.set_named_property(&key_str, monty_to_js(&value.value, env)?)?;
         }
         js_args.push(kwargs_obj.raw());
     }

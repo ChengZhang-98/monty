@@ -4,7 +4,7 @@
 //! - Caching parsed code to avoid re-parsing
 //! - Snapshotting execution state for external function calls
 
-use monty::{MontyObject, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter, RunProgress};
+use monty::{AnnotatedObject, MontyObject, MontyRun, NameLookupResult, NoLimitTracker, PrintWriter, RunProgress};
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
 fn resolve_name_lookups<T: monty::ResourceTracker>(
@@ -136,7 +136,7 @@ fn run_progress_dump_load_roundtrip() {
     // Should still be at the external function call
     let call = loaded.into_function_call().expect("should be at function call");
     assert_eq!(call.function_name, "ext_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(42)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(42))]);
 
     // Resume execution with a return value
     let result = call.resume(MontyObject::Int(100), PrintWriter::Stdout).unwrap();
@@ -157,7 +157,7 @@ fn run_progress_dump_load_multiple_calls() {
     let loaded: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();
     let call = loaded.into_function_call().unwrap();
     assert_eq!(call.function_name, "ext_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(1)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(1))]);
 
     // Resume first call
     let progress = call.resume(MontyObject::Int(10), PrintWriter::Stdout).unwrap();
@@ -169,7 +169,7 @@ fn run_progress_dump_load_multiple_calls() {
     let loaded: RunProgress<NoLimitTracker> = RunProgress::load(&bytes).unwrap();
     let call = loaded.into_function_call().unwrap();
     assert_eq!(call.function_name, "ext_fn");
-    assert_eq!(call.args, vec![MontyObject::Int(2)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(2))]);
 
     // Resume second call to completion
     let result = call.resume(MontyObject::Int(20), PrintWriter::Stdout).unwrap();

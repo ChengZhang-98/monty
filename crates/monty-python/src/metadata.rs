@@ -51,7 +51,7 @@ pub struct PyObjectMetadata {
 impl PyObjectMetadata {
     #[new]
     #[pyo3(signature = (*, producers=None, consumers=None, tags=None))]
-    fn new(
+    pub(crate) fn new(
         py: Python<'_>,
         producers: Option<&Bound<'_, PyFrozenSet>>,
         consumers: Option<&Bound<'_, PyFrozenSet>>,
@@ -132,7 +132,7 @@ pub struct PyAnnotatedValue {
 #[pymethods]
 impl PyAnnotatedValue {
     #[new]
-    fn new(value: Py<PyAny>, metadata: Py<PyObjectMetadata>) -> Self {
+    pub(crate) fn new(value: Py<PyAny>, metadata: Py<PyObjectMetadata>) -> Self {
         Self { value, metadata }
     }
 

@@ -143,6 +143,52 @@ result = m.start(inputs={
 # result.metadata == meta_a (merge with DEFAULT is identity)
 ```
 
+## Reading metadata on external function call arguments
+
+When execution pauses at an external function call, the `FunctionSnapshot`
+carries metadata on each argument. Use `annotated_args` and `annotated_kwargs`
+to read them — these return `AnnotatedValue` objects (the same type used for
+inputs):
+
+```python
+from pydantic_monty import AnnotatedValue, FunctionSnapshot, Monty, ObjectMetadata
+
+code = 'fetch(api_key, url)'
+m = Monty(code, inputs=['api_key', 'url'], external_functions=['fetch'])
+
+key_meta = ObjectMetadata(producers=frozenset({'vault'}), consumers=frozenset({'internal'}))
+snap = m.start(inputs={
+    'api_key': AnnotatedValue('secret', key_meta),
+    'url': 'https://example.com',
+})
+
+assert isinstance(snap, FunctionSnapshot)
+
+# Read per-argument metadata
+annotated = snap.annotated_args
+assert annotated[0].value == 'secret'
+assert annotated[0].metadata.producers == frozenset({'vault'})
+assert annotated[0].metadata.consumers == frozenset({'internal'})
+
+assert annotated[1].value == 'https://example.com'
+assert annotated[1].metadata.producers == frozenset()  # no metadata
+
+# Plain access still works (no metadata):
+assert snap.args == ('secret', 'https://example.com')
+
+# For kwargs:
+# snap.annotated_kwargs  → dict[str, AnnotatedValue]
+```
+
+### `FunctionSnapshot` metadata properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `.args` | `tuple[Any, ...]` | Plain argument values (no metadata) |
+| `.kwargs` | `dict[str, Any]` | Plain kwarg values (no metadata) |
+| `.annotated_args` | `tuple[AnnotatedValue, ...]` | Each arg bundled with its `ObjectMetadata` |
+| `.annotated_kwargs` | `dict[str, AnnotatedValue]` | Each kwarg value bundled with its `ObjectMetadata` |
+
 ## Attaching metadata on resume
 
 When resuming a `FunctionSnapshot` with an external function's return value,
@@ -264,8 +310,9 @@ else:
 - **Default arguments**: When a function parameter uses a default value, the
   default's metadata is not propagated. Parameters without an explicit argument
   get `DEFAULT` metadata.
-- **JS bindings**: The JavaScript package (`@pydantic/monty`) does not yet
-  expose metadata APIs.
+- **JS bindings**: The JavaScript package (`@pydantic/monty`) carries metadata
+  internally but does not yet expose annotated accessors. Plain `.args` and
+  `.kwargs` on `MontySnapshot` return values without metadata.
 
 ## Complete example
 

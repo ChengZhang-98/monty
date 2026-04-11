@@ -222,7 +222,7 @@ Every value-producing opcode now propagates metadata through the parallel stack.
 
 **Not yet propagated** (deferred):
 - `CellValue` (closure cells): would require breaking `#[repr(transparent)]` on `CellValue`. Cells propagate `DEFAULT` for now. This means closure-captured variables lose their metadata — acceptable for Phase 2, to be addressed when `CellValue` is reworked.
-- External call resume values: get `DEFAULT` until Phase 4 adds API boundary metadata.
+- External call resume values: addressed in Phase 4 (API boundary metadata).
 
 ### Phase 3: Container element metadata (complete)
 
@@ -327,6 +327,71 @@ Metadata now enters and exits the VM through the public API.
 | `crates/monty/src/types/dict.rs` | Added `value_meta_for_key()` for subscript metadata resolution without `&mut VM`. |
 | `crates/monty/src/types/list.rs` | Added `extend_with_meta()` for metadata-preserving list extension. |
 | `crates/monty-python/src/metadata.rs` | Added `validate_no_empty_strings()` — rejects empty strings in metadata labels. |
+
+### Phase 6: External function call arg metadata (complete)
+
+Metadata on the **arguments** of external function calls (and OS calls) is now
+preserved and exposed to the host. Previously, `FunctionCall.args` was
+`Vec<MontyObject>` (no metadata); now it is `Vec<AnnotatedObject>`, and the
+Python `FunctionSnapshot` exposes `annotated_args` and `annotated_kwargs`
+properties that return `AnnotatedValue` objects — the same type used for inputs.
+
+**Core changes:**
+
+- `pending_kwarg_metadata: Vec<MetadataId>` added to the VM alongside the
+  existing `pending_arg_metadata`. Populated by `exec_call_function_kw` and
+  `exec_call_attr_kw` via `pop_n_with_meta()`.
+- `ArgValues::into_annotated_objects()` replaces `into_py_objects()`. Reads
+  positional metadata from `pending_arg_metadata`, inline kwarg metadata from
+  `pending_kwarg_metadata`, and dict kwarg metadata from the dict's own
+  per-entry metadata.
+- `Dict::into_iter_with_metadata()` consuming iterator added for
+  metadata-preserving dict kwargs conversion.
+- `FunctionCall`, `OsCall`, `ReplFunctionCall`, `ReplOsCall` args/kwargs fields
+  changed from `Vec<MontyObject>` to `Vec<AnnotatedObject>` (and likewise for
+  kwargs pairs).
+- `ConvertedExit::FunctionCall` and `ConvertedExit::OsCall` updated accordingly.
+- All consumers updated: `OsFunction::on_no_handler`, `parse_fs_request`,
+  `MountTable::handle_os_call`, dispatch functions in Python/JS bindings.
+
+**Python API:**
+
+- `FunctionSnapshot.annotated_args` → `tuple[AnnotatedValue, ...]` — each
+  positional arg bundled with its metadata.
+- `FunctionSnapshot.annotated_kwargs` → `dict[str, AnnotatedValue]` — each
+  kwarg value bundled with its metadata.
+- `FunctionSnapshot.args` and `.kwargs` still return plain values (backwards
+  compatible).
+
+**JS API:**
+
+- `MontySnapshot.args` and `.kwargs` still return plain values (backwards
+  compatible). The underlying `Vec<AnnotatedObject>` carries metadata
+  internally; annotated accessors can be added when the JS metadata API is
+  designed.
+
+**Serialization:**
+
+- `SERIALIZATION_VERSION` bumped from 1 to 2 (inner `FunctionCall<T>` now
+  serializes `Vec<AnnotatedObject>` args).
+
+| File | Change |
+|------|--------|
+| `crates/monty/src/bytecode/vm/mod.rs` | Added `pending_kwarg_metadata` field |
+| `crates/monty/src/bytecode/vm/call.rs` | KW call opcodes capture metadata via `pop_n_with_meta()` |
+| `crates/monty/src/args.rs` | `into_annotated_objects()` replaces `into_py_objects()` |
+| `crates/monty/src/types/dict.rs` | `DictIntoIterWithMeta`, `Dict::into_iter_with_metadata()` |
+| `crates/monty/src/run_progress.rs` | `FunctionCall`, `OsCall`, `ConvertedExit` use `AnnotatedObject` |
+| `crates/monty/src/repl.rs` | `ReplFunctionCall`, `ReplOsCall` use `AnnotatedObject` |
+| `crates/monty/src/os.rs` | `on_no_handler` accepts `&[AnnotatedObject]` |
+| `crates/monty/src/fs/dispatch.rs` | `parse_fs_request` accepts `&[AnnotatedObject]` |
+| `crates/monty/src/fs/mount_table.rs` | `handle_os_call` accepts `&[AnnotatedObject]` |
+| `crates/monty-python/src/monty_cls.rs` | `annotated_args`/`annotated_kwargs` getters on `PyFunctionSnapshot` |
+| `crates/monty-python/src/external.rs` | Dispatch functions accept `&[AnnotatedObject]` |
+| `crates/monty-python/src/async_dispatch.rs` | Dispatch functions accept `&[AnnotatedObject]` |
+| `crates/monty-python/src/serialization.rs` | `SERIALIZATION_VERSION` bumped to 2 |
+| `crates/monty-js/src/monty_cls.rs` | `MontySnapshot` and dispatch updated for `AnnotatedObject` |
+| `crates/monty-cli/src/main.rs` | Helper functions updated for `AnnotatedObject` |
 
 ## Testing
 

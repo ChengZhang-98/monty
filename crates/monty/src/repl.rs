@@ -458,10 +458,10 @@ impl<T: ResourceTracker + DeserializeOwned> ReplProgress<T> {
 pub struct ReplFunctionCall<T: ResourceTracker> {
     /// The name of the function or method being called.
     pub function_name: String,
-    /// The positional arguments passed to the function.
-    pub args: Vec<MontyObject>,
-    /// The keyword arguments passed to the function (key, value pairs).
-    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// The positional arguments passed to the function, each carrying optional metadata.
+    pub args: Vec<AnnotatedObject>,
+    /// The keyword arguments passed to the function (key, value pairs), each carrying optional metadata.
+    pub kwargs: Vec<(AnnotatedObject, AnnotatedObject)>,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
     /// Whether this is a dataclass method call (first arg is `self`).
@@ -508,10 +508,10 @@ impl<T: ResourceTracker> ReplFunctionCall<T> {
 pub struct ReplOsCall<T: ResourceTracker> {
     /// The OS function to execute.
     pub function: OsFunction,
-    /// The positional arguments for the OS function.
-    pub args: Vec<MontyObject>,
-    /// The keyword arguments passed to the function (key, value pairs).
-    pub kwargs: Vec<(MontyObject, MontyObject)>,
+    /// The positional arguments for the OS function, each carrying optional metadata.
+    pub args: Vec<AnnotatedObject>,
+    /// The keyword arguments passed to the function (key, value pairs), each carrying optional metadata.
+    pub kwargs: Vec<(AnnotatedObject, AnnotatedObject)>,
     /// Unique identifier for this call (used for async correlation).
     pub call_id: u32,
     /// Internal REPL execution snapshot.

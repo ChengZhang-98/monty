@@ -452,11 +452,26 @@ class FunctionSnapshot:
 
     @property
     def args(self) -> tuple[Any, ...]:
-        """The positional arguments passed to the external function."""
+        """The positional arguments passed to the external function (plain values)."""
 
     @property
     def kwargs(self) -> dict[str, Any]:
-        """The keyword arguments passed to the external function."""
+        """The keyword arguments passed to the external function (plain values)."""
+
+    @property
+    def annotated_args(self) -> tuple[AnnotatedValue, ...]:
+        """Positional arguments with metadata, as AnnotatedValue objects.
+
+        Each AnnotatedValue bundles the argument value with its provenance metadata.
+        This mirrors the AnnotatedValue input format used by Monty.run() / Monty.start().
+        """
+
+    @property
+    def annotated_kwargs(self) -> dict[str, AnnotatedValue]:
+        """Keyword arguments with metadata, as a dict of str → AnnotatedValue.
+
+        Each value is an AnnotatedValue bundling the kwarg value with its provenance metadata.
+        """
 
     @property
     def call_id(self) -> int:

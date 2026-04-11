@@ -57,7 +57,7 @@ fn mount_at_mnt(tmpdir: &TempDir, mode: MountMode) -> MountTable {
 
 /// Shorthand: call handle_os_call with a single path argument.
 fn call(mt: &mut MountTable, func: OsFunction, path: &str) -> Option<Result<MontyObject, MountError>> {
-    mt.handle_os_call(func, &[MontyObject::Path(path.to_owned())], &[])
+    mt.handle_os_call(func, &[MontyObject::Path(path.to_owned()).into()], &[])
 }
 
 /// Shorthand: call and unwrap both the Option and Result.
@@ -105,7 +105,7 @@ fn call_write(
     path: &str,
     content: MontyObject,
 ) -> Option<Result<MontyObject, MountError>> {
-    mt.handle_os_call(func, &[MontyObject::Path(path.to_owned()), content], &[])
+    mt.handle_os_call(func, &[MontyObject::Path(path.to_owned()).into(), content.into()], &[])
 }
 
 /// Shorthand for mkdir with kwargs.
@@ -117,10 +117,16 @@ fn call_mkdir(
 ) -> Option<Result<MontyObject, MountError>> {
     mt.handle_os_call(
         OsFunction::Mkdir,
-        &[MontyObject::Path(path.to_owned())],
+        &[MontyObject::Path(path.to_owned()).into()],
         &[
-            (MontyObject::String("parents".to_owned()), MontyObject::Bool(parents)),
-            (MontyObject::String("exist_ok".to_owned()), MontyObject::Bool(exist_ok)),
+            (
+                MontyObject::String("parents".to_owned()).into(),
+                MontyObject::Bool(parents).into(),
+            ),
+            (
+                MontyObject::String("exist_ok".to_owned()).into(),
+                MontyObject::Bool(exist_ok).into(),
+            ),
         ],
     )
 }
@@ -129,7 +135,10 @@ fn call_mkdir(
 fn call_rename(mt: &mut MountTable, src: &str, dst: &str) -> Option<Result<MontyObject, MountError>> {
     mt.handle_os_call(
         OsFunction::Rename,
-        &[MontyObject::Path(src.to_owned()), MontyObject::Path(dst.to_owned())],
+        &[
+            MontyObject::Path(src.to_owned()).into(),
+            MontyObject::Path(dst.to_owned()).into(),
+        ],
         &[],
     )
 }
@@ -1580,7 +1589,7 @@ fn non_filesystem_ops_return_none() {
 
     let result = mt.handle_os_call(
         OsFunction::Getenv,
-        &[MontyObject::String("PATH".to_owned()), MontyObject::None],
+        &[MontyObject::String("PATH".to_owned()).into(), MontyObject::None.into()],
         &[],
     );
     assert!(result.is_none(), "non-filesystem ops should return None");
@@ -2204,7 +2213,7 @@ fn ovl_mem_rmdir_real_dir_with_overlay_children() {
 /// `on_no_handler` for filesystem ops should not include `Errno` prefix.
 #[test]
 fn on_no_handler_includes_errno() {
-    let exc = OsFunction::Exists.on_no_handler(&[MontyObject::Path("/outside".to_owned())]);
+    let exc = OsFunction::Exists.on_no_handler(&[MontyObject::Path("/outside".to_owned()).into()]);
     assert_eq!(exc.exc_type(), ExcType::PermissionError);
     assert_eq!(exc.message().unwrap_or(""), "Permission denied: '/outside'");
 }

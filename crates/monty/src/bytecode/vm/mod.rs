@@ -627,13 +627,23 @@ pub struct VM<'h, 'a, T: ResourceTracker> {
     /// Owned by the VM and transferred to/from [`VMSnapshot`] on pause/resume.
     pub(crate) metadata_store: MetadataStore,
 
-    /// Temporary storage for argument metadata during function calls.
+    /// Temporary storage for positional argument metadata during function calls.
     ///
     /// Populated by `pop_n_args()` before the arguments are popped from the stack,
-    /// then consumed by `call_sync_function()` when building the callee's namespace.
+    /// then consumed by `call_sync_function()` when building the callee's namespace,
+    /// or by `ArgValues::into_annotated_objects()` when yielding to an external call.
     /// This bridges the gap between argument popping (which discards metadata) and
-    /// namespace creation (which needs the metadata for parameter slots).
-    pending_arg_metadata: Vec<MetadataId>,
+    /// namespace creation / external call conversion (which needs per-arg metadata).
+    pub(crate) pending_arg_metadata: Vec<MetadataId>,
+
+    /// Temporary storage for keyword argument value metadata during function calls.
+    ///
+    /// Populated by `exec_call_function_kw()` and `exec_call_attr_kw()` before the
+    /// kwargs are popped from the stack, then consumed by
+    /// `KwargsValues::into_annotated_objects()` when yielding to an external call.
+    /// Only used for `KwargsValues::Inline` — `KwargsValues::Dict` carries its own
+    /// per-entry metadata internally.
+    pub(crate) pending_kwarg_metadata: Vec<MetadataId>,
 }
 
 impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
@@ -663,6 +673,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             meta_exception_stack: Vec::new(),
             metadata_store: MetadataStore::new(),
             pending_arg_metadata: Vec::new(),
+            pending_kwarg_metadata: Vec::new(),
         }
     }
 
@@ -700,6 +711,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             meta_exception_stack: Vec::new(),
             metadata_store,
             pending_arg_metadata: Vec::new(),
+            pending_kwarg_metadata: Vec::new(),
         }
     }
 
@@ -775,6 +787,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             meta_exception_stack,
             metadata_store: snapshot.metadata_store,
             pending_arg_metadata: Vec::new(),
+            pending_kwarg_metadata: Vec::new(),
         }
     }
 

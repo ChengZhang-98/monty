@@ -339,23 +339,23 @@ enum DispatchResult {
 ///
 /// # Panics
 /// Panics if the function name is unknown or arguments are invalid types.
-fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult {
+fn dispatch_external_call(name: &str, args: Vec<AnnotatedObject>) -> DispatchResult {
     match name {
         "add_ints" => {
             assert!(args.len() == 2, "add_ints requires 2 arguments");
-            let a = i64::try_from(&args[0]).expect("add_ints: first arg must be int");
-            let b = i64::try_from(&args[1]).expect("add_ints: second arg must be int");
+            let a = i64::try_from(&args[0].value).expect("add_ints: first arg must be int");
+            let b = i64::try_from(&args[1].value).expect("add_ints: second arg must be int");
             DispatchResult::Sync(MontyObject::Int(a + b).into())
         }
         "concat_strings" => {
             assert!(args.len() == 2, "concat_strings requires 2 arguments");
-            let a = String::try_from(&args[0]).expect("concat_strings: first arg must be str");
-            let b = String::try_from(&args[1]).expect("concat_strings: second arg must be str");
+            let a = String::try_from(&args[0].value).expect("concat_strings: first arg must be str");
+            let b = String::try_from(&args[1].value).expect("concat_strings: second arg must be str");
             DispatchResult::Sync(MontyObject::String(a + &b).into())
         }
         "return_value" => {
             assert!(args.len() == 1, "return_value requires 1 argument");
-            DispatchResult::Sync(args.into_iter().next().unwrap().into())
+            DispatchResult::Sync(args.into_iter().next().unwrap().value.into())
         }
         "get_list" => {
             assert!(args.is_empty(), "get_list requires no arguments");
@@ -371,8 +371,8 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
         "raise_error" => {
             // raise_error(exc_type: str, message: str) -> raises exception
             assert!(args.len() == 2, "raise_error requires 2 arguments");
-            let exc_type_str = String::try_from(&args[0]).expect("raise_error: first arg must be str");
-            let message = String::try_from(&args[1]).expect("raise_error: second arg must be str");
+            let exc_type_str = String::try_from(&args[0].value).expect("raise_error: first arg must be str");
+            let message = String::try_from(&args[1].value).expect("raise_error: second arg must be str");
             let exc_type = match exc_type_str.as_str() {
                 "ValueError" => ExcType::ValueError,
                 "TypeError" => ExcType::TypeError,
@@ -422,7 +422,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
         }
         "make_user" => {
             assert!(args.len() == 1, "make_user requires 1 argument");
-            let name = String::try_from(&args[0]).expect("make_user: first arg must be str");
+            let name = String::try_from(&args[0].value).expect("make_user: first arg must be str");
             // Return an immutable User(name=name, active=True) dataclass
             DispatchResult::Sync(
                 MontyObject::Dataclass {
@@ -459,7 +459,7 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
             // async_call(x) -> coroutine that returns x
             // This is an async function - use run_pending() and resolve later
             assert!(args.len() == 1, "async_call requires 1 argument");
-            DispatchResult::Async(args.into_iter().next().unwrap())
+            DispatchResult::Async(args.into_iter().next().unwrap().value)
         }
         _ => panic!("Unknown external function: {name}"),
     }
@@ -472,26 +472,29 @@ fn dispatch_external_call(name: &str, args: Vec<MontyObject>) -> DispatchResult 
 /// Unknown methods return `AttributeError`.
 fn dispatch_method_call(
     method_name: &str,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &[AnnotatedObject],
+    kwargs: &[(AnnotatedObject, AnnotatedObject)],
 ) -> ExtFunctionResult {
     let class_name = match args.first() {
-        Some(MontyObject::Dataclass { name, .. }) => name.as_str(),
+        Some(AnnotatedObject {
+            value: MontyObject::Dataclass { name, .. },
+            ..
+        }) => name.as_str(),
         _ => "<unknown>",
     };
 
     match (class_name, method_name) {
         // Point.sum(self) -> int
         ("Point" | "MutablePoint", "sum") => {
-            let (x, y) = extract_point_fields(&args[0]);
+            let (x, y) = extract_point_fields(&args[0].value);
             MontyObject::Int(x + y).into()
         }
         // Point.add(self, dx, dy) -> Point
         ("Point", "add") => {
             assert!(args.len() == 3, "Point.add requires self, dx, dy");
-            let (x, y) = extract_point_fields(&args[0]);
-            let dx = i64::try_from(&args[1]).expect("dx must be int");
-            let dy = i64::try_from(&args[2]).expect("dy must be int");
+            let (x, y) = extract_point_fields(&args[0].value);
+            let dx = i64::try_from(&args[1].value).expect("dx must be int");
+            let dy = i64::try_from(&args[2].value).expect("dy must be int");
             MontyObject::Dataclass {
                 name: "Point".to_string(),
                 type_id: 0,
@@ -508,8 +511,8 @@ fn dispatch_method_call(
         // Point.scale(self, factor) -> Point
         ("Point", "scale") => {
             assert!(args.len() == 2, "Point.scale requires self, factor");
-            let (x, y) = extract_point_fields(&args[0]);
-            let factor = i64::try_from(&args[1]).expect("factor must be int");
+            let (x, y) = extract_point_fields(&args[0].value);
+            let factor = i64::try_from(&args[1].value).expect("factor must be int");
             MontyObject::Dataclass {
                 name: "Point".to_string(),
                 type_id: 0,
@@ -525,10 +528,10 @@ fn dispatch_method_call(
         }
         // Point.describe(self, label='point') -> str
         ("Point", "describe") => {
-            let (x, y) = extract_point_fields(&args[0]);
+            let (x, y) = extract_point_fields(&args[0].value);
             // Check positional arg first, then kwargs, then default
             let label = if args.len() > 1 {
-                String::try_from(&args[1]).expect("label must be str")
+                String::try_from(&args[1].value).expect("label must be str")
             } else if let Some(kw_label) = get_kwarg_str(kwargs, "label") {
                 kw_label
             } else {
@@ -544,7 +547,7 @@ fn dispatch_method_call(
         ("MutablePoint", "shift") => MontyObject::None.into(),
         // User.greeting(self) -> str
         ("User", "greeting") => {
-            let name = extract_user_name(&args[0]);
+            let name = extract_user_name(&args[0].value);
             MontyObject::String(format!("Hello, {name}!")).into()
         }
         // Unknown method — return AttributeError
@@ -577,12 +580,12 @@ fn extract_point_fields(obj: &MontyObject) -> (i64, i64) {
 }
 
 /// Extracts a string kwarg value by key name.
-fn get_kwarg_str(kwargs: &[(MontyObject, MontyObject)], name: &str) -> Option<String> {
+fn get_kwarg_str(kwargs: &[(AnnotatedObject, AnnotatedObject)], name: &str) -> Option<String> {
     for (key, value) in kwargs {
-        if let MontyObject::String(key_str) = key
+        if let MontyObject::String(key_str) = &key.value
             && key_str == name
         {
-            return Some(String::try_from(value).expect("kwarg value must be str"));
+            return Some(String::try_from(&value.value).expect("kwarg value must be str"));
         }
     }
     None
@@ -817,12 +820,12 @@ fn get_virtual_dir_entries(path: &str) -> Option<Vec<String>> {
 }
 
 /// Helper to get a boolean kwarg by name.
-fn get_kwarg_bool(kwargs: &[(MontyObject, MontyObject)], name: &str) -> bool {
+fn get_kwarg_bool(kwargs: &[(AnnotatedObject, AnnotatedObject)], name: &str) -> bool {
     for (key, value) in kwargs {
-        if let MontyObject::String(key_str) = key
+        if let MontyObject::String(key_str) = &key.value
             && key_str == name
         {
-            return matches!(value, MontyObject::Bool(true));
+            return matches!(value.value, MontyObject::Bool(true));
         }
     }
     false
@@ -835,8 +838,8 @@ fn get_kwarg_bool(kwargs: &[(MontyObject, MontyObject)], name: &str) -> bool {
 #[expect(clippy::cast_possible_wrap)] // Virtual file sizes are tiny, no wrap possible
 fn dispatch_os_call(
     function: OsFunction,
-    args: &[MontyObject],
-    kwargs: &[(MontyObject, MontyObject)],
+    args: &[AnnotatedObject],
+    kwargs: &[(AnnotatedObject, AnnotatedObject)],
 ) -> ExtFunctionResult {
     // Handle DateToday — return deterministic fixture date (local date at UTC+02:00).
     // Deterministic timestamp: 1_700_000_000 UTC = 2023-11-14 22:13:20 UTC.
@@ -877,7 +880,7 @@ fn dispatch_os_call(
     }
 
     // Extract path from MontyObject::Path (or String for backwards compatibility)
-    let path = match &args[0] {
+    let path = match &args[0].value {
         MontyObject::Path(p) => p.clone(),
         MontyObject::String(s) => s.clone(),
         other => panic!("OS call: first arg must be path, got {other:?}"),
@@ -963,8 +966,8 @@ fn dispatch_os_call(
         OsFunction::Getenv => {
             // Virtual environment for testing os.getenv()
             // args[0] is key, args[1] is default (may be None)
-            let key = String::try_from(&args[0]).expect("getenv: first arg must be key string");
-            let default = &args[1];
+            let key = String::try_from(&args[0].value).expect("getenv: first arg must be key string");
+            let default = &args[1].value;
 
             // Provide a few test environment variables
             let value = match key.as_str() {
@@ -985,7 +988,7 @@ fn dispatch_os_call(
         }
         OsFunction::WriteText => {
             // args[0] is path, args[1] is text content
-            let text = String::try_from(&args[1]).expect("write_text: second arg must be string");
+            let text = String::try_from(&args[1].value).expect("write_text: second arg must be string");
             MUTABLE_VFS.with(|vfs| {
                 let mut vfs = vfs.borrow_mut();
                 vfs.files.insert(path.clone(), (text.into_bytes(), 0o644));
@@ -997,7 +1000,7 @@ fn dispatch_os_call(
         }
         OsFunction::WriteBytes => {
             // args[0] is path, args[1] is bytes content
-            let bytes = match &args[1] {
+            let bytes = match &args[1].value {
                 MontyObject::Bytes(b) => b.clone(),
                 other => panic!("write_bytes: second arg must be bytes, got {other:?}"),
             };
@@ -1084,7 +1087,7 @@ fn dispatch_os_call(
         }
         OsFunction::Rename => {
             // args[0] is src path, args[1] is dest path
-            let dest = match &args[1] {
+            let dest = match &args[1].value {
                 MontyObject::Path(p) => p.clone(),
                 MontyObject::String(s) => s.clone(),
                 other => panic!("rename: second arg must be path, got {other:?}"),
@@ -1127,8 +1130,8 @@ const DATETIME_FIXTURE_TIMESTAMP: i64 = 1_700_000_000;
 /// The `tz` argument (args[0]) determines whether a naive or aware datetime is
 /// returned. The deterministic timestamp is 1_700_000_000 UTC (2023-11-14 22:13:20 UTC).
 /// For naive datetimes the virtual local offset is UTC+02:00.
-fn dispatch_datetime_now(args: &[MontyObject]) -> MontyObject {
-    let tz = args.first().expect("DateTimeNow requires a tz argument");
+fn dispatch_datetime_now(args: &[AnnotatedObject]) -> MontyObject {
+    let tz = &args.first().expect("DateTimeNow requires a tz argument").value;
     match tz {
         MontyObject::None => {
             // Naive datetime: apply local offset to get local wall-clock time

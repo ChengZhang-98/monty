@@ -5,7 +5,8 @@
 use std::time::{Duration, Instant};
 
 use monty::{
-    ExcType, LimitedTracker, MontyObject, MontyRun, NameLookupResult, PrintWriter, ResourceLimits, RunProgress,
+    AnnotatedObject, ExcType, LimitedTracker, MontyObject, MontyRun, NameLookupResult, PrintWriter, ResourceLimits,
+    RunProgress,
 };
 
 /// Resolves consecutive `NameLookup` yields by providing a `Function` object for each name.
@@ -369,7 +370,7 @@ fn executor_iter_resource_limit_on_resume() {
         .into_function_call()
         .expect("function call");
     assert_eq!(call.function_name, "foo");
-    assert_eq!(call.args, vec![MontyObject::Int(1)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(1))]);
 
     // Resume - should fail due to allocation limit during the for loop
     let result = call.resume(MontyObject::None, PrintWriter::Stdout);
@@ -452,7 +453,7 @@ fn executor_iter_resource_limit_multiple_function_calls() {
         .into_function_call()
         .expect("first call");
     assert_eq!(call.function_name, "foo");
-    assert_eq!(call.args, vec![MontyObject::Int(1)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(1))]);
 
     let progress = call.resume(MontyObject::None, PrintWriter::Stdout).unwrap();
     let call = resolve_name_lookups(progress)
@@ -460,7 +461,7 @@ fn executor_iter_resource_limit_multiple_function_calls() {
         .into_function_call()
         .expect("second call");
     assert_eq!(call.function_name, "bar");
-    assert_eq!(call.args, vec![MontyObject::Int(2)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(2))]);
 
     let progress = call.resume(MontyObject::None, PrintWriter::Stdout).unwrap();
     let call = resolve_name_lookups(progress)
@@ -468,7 +469,7 @@ fn executor_iter_resource_limit_multiple_function_calls() {
         .into_function_call()
         .expect("third call");
     assert_eq!(call.function_name, "baz");
-    assert_eq!(call.args, vec![MontyObject::Int(3)]);
+    assert_eq!(call.args, vec![AnnotatedObject::from(MontyObject::Int(3))]);
 
     let result = call
         .resume(MontyObject::None, PrintWriter::Stdout)

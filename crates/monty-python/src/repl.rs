@@ -866,13 +866,16 @@ fn handle_repl_os_call<T: ResourceTracker>(
         let py_args: Vec<Py<PyAny>> = call
             .args
             .iter()
-            .map(|arg| monty_to_py(py, arg, dc_registry))
+            .map(|arg| monty_to_py(py, &arg.value, dc_registry))
             .collect::<PyResult<_>>()?;
         let py_args_tuple = PyTuple::new(py, py_args)?;
 
         let py_kwargs = PyDict::new(py);
         for (k, v) in &call.kwargs {
-            py_kwargs.set_item(monty_to_py(py, k, dc_registry)?, monty_to_py(py, v, dc_registry)?)?;
+            py_kwargs.set_item(
+                monty_to_py(py, &k.value, dc_registry)?,
+                monty_to_py(py, &v.value, dc_registry)?,
+            )?;
         }
 
         return match fb.bind(py).call1((call.function.to_string(), py_args_tuple, py_kwargs)) {
