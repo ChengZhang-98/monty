@@ -145,6 +145,18 @@ impl Type {
         }
     }
 
+    /// Returns the inner `ExcType` if this is an exception type, `None` otherwise.
+    ///
+    /// Used by the Python binding layer to map `Type::Exception(exc_type)` to the
+    /// corresponding Python exception class when converting `MontyObject::Type` values.
+    #[must_use]
+    pub const fn as_exception(self) -> Option<ExcType> {
+        match self {
+            Self::Exception(exc_type) => Some(exc_type),
+            _ => None,
+        }
+    }
+
     /// Resolves a bare Python name to a builtin type, if it is one.
     ///
     /// Only matches names that are true Python builtins — accessible without any import.
