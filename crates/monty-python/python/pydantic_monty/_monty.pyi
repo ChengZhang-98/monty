@@ -12,6 +12,8 @@ __all__ = [
     '__version__',
     'AnnotatedValue',
     'ObjectMetadata',
+    'UniversalSet',
+    'UNIVERSAL',
     'Monty',
     'MontyRepl',
     'MontyComplete',
@@ -673,37 +675,68 @@ class FutureSnapshot:
     def __repr__(self) -> str: ...
 
 @final
+class UniversalSet:
+    """The universal set — contains every element.
+
+    Used as a metadata field value to indicate "no restrictions" (for consumers)
+    or "all sources/labels" (for producers/tags). Supports ``in`` membership
+    checks (always ``True``) but cannot be iterated or measured.
+
+    Access the singleton via the module-level ``UNIVERSAL`` constant rather
+    than constructing directly.
+    """
+
+    def __contains__(self, item: str) -> bool: ...
+    def __bool__(self) -> bool: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __hash__(self) -> int: ...
+
+UNIVERSAL: UniversalSet
+"""The universal set singleton.
+
+Use ``UNIVERSAL`` as a metadata field value to represent the infinite
+universal set:
+
+- ``consumers=UNIVERSAL`` → any consumer may see the value (default)
+- ``producers=UNIVERSAL`` → produced by every source (sticky under union)
+- ``tags=UNIVERSAL`` → carries every label (sticky under union)
+"""
+
+@final
 class ObjectMetadata:
     """Provenance metadata attached to a value.
 
     Tracks where a value came from (producers), who may see it (consumers),
-    and classification labels (tags).
+    and classification labels (tags). Each field is either a ``frozenset[str]``
+    (explicit set) or ``UNIVERSAL`` (the infinite universal set).
 
-    **Important:** ``consumers=None`` (the default) means *universal access* —
-    any consumer may see the value. ``consumers=frozenset()`` means *no consumer*
-    is allowed to see the value. These are very different:
+    **Important:** ``UNIVERSAL`` and ``frozenset()`` are very different:
 
-    - ``ObjectMetadata()`` → universal consumers (no restrictions)
+    - ``ObjectMetadata()`` → empty producers, universal consumers, empty tags
     - ``ObjectMetadata(consumers=frozenset())`` → empty consumer set (nobody)
+    - ``ObjectMetadata(producers=UNIVERSAL)`` → every source (sticky under union)
+
+    Omitting a field (or passing ``None``) uses the field-specific default:
+    ``frozenset()`` for producers/tags, ``UNIVERSAL`` for consumers.
 
     Label strings must be non-empty.
     """
 
-    producers: frozenset[str]
-    """Source names that contributed to this value."""
-    consumers: frozenset[str] | None
-    """Allowed consumer names. ``None`` = universal (no restriction, any consumer
-    may see the value). ``frozenset()`` = empty set (no consumer is allowed).
+    producers: frozenset[str] | UniversalSet
+    """Source names that contributed to this value, or ``UNIVERSAL``."""
+    consumers: frozenset[str] | UniversalSet
+    """Allowed consumer names, or ``UNIVERSAL`` (no restriction).
     When two values combine, consumers are *intersected* (most restrictive wins)."""
-    tags: frozenset[str]
-    """Classification labels (e.g. ``"pii"``, ``"credential"``)."""
+    tags: frozenset[str] | UniversalSet
+    """Classification labels (e.g. ``"pii"``, ``"credential"``), or ``UNIVERSAL``."""
 
     def __new__(
         cls,
         *,
-        producers: frozenset[str] | None = None,
-        consumers: frozenset[str] | None = None,
-        tags: frozenset[str] | None = None,
+        producers: frozenset[str] | UniversalSet | None = None,
+        consumers: frozenset[str] | UniversalSet | None = None,
+        tags: frozenset[str] | UniversalSet | None = None,
     ) -> Self: ...
     def __repr__(self) -> str: ...
     def __eq__(self, other: object) -> bool: ...

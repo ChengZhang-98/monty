@@ -300,15 +300,37 @@ impl Default for MetadataId {
 /// Unlike the internal [`Metadata`] which uses interned [`LabelId`]s, this type
 /// uses plain strings so that callers don't need to interact with the interning system.
 ///
-/// The `consumers` field uses `None` to represent the universal set (no restrictions).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// For each field, `None` represents the **universal set**:
+/// - `producers: None` → "produced by everything" (sticky under union)
+/// - `consumers: None` → "anyone may consume" (narrows under intersection)
+/// - `tags: None` → "carries every label" (sticky under union)
+///
+/// `Some(BTreeSet::new())` is the **empty set** — a very different meaning from `None`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectMetadata {
     /// Data sources that contributed to this value.
-    pub producers: BTreeSet<String>,
+    /// `None` means universal (every source). `Some(set)` lists specific sources.
+    pub producers: Option<BTreeSet<String>>,
     /// Authorized consumers. `None` means universal (no restrictions, the default).
+    /// `Some(set)` restricts to those consumers.
     pub consumers: Option<BTreeSet<String>>,
     /// Classification labels.
-    pub tags: BTreeSet<String>,
+    /// `None` means universal (every label). `Some(set)` lists specific labels.
+    pub tags: Option<BTreeSet<String>>,
+}
+
+impl Default for ObjectMetadata {
+    /// Default metadata: empty producers, universal consumers, empty tags.
+    ///
+    /// This represents a value with no provenance restrictions — it came from nowhere
+    /// specific, anyone can see it, and it has no labels.
+    fn default() -> Self {
+        Self {
+            producers: Some(BTreeSet::new()),
+            consumers: None,
+            tags: Some(BTreeSet::new()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -452,12 +474,18 @@ impl MetadataStore {
     /// Converts an [`ObjectMetadata`] (public API type) into a [`MetadataId`] by
     /// interning all label strings and the resulting metadata record.
     pub fn intern_object_metadata(&mut self, obj_meta: &ObjectMetadata) -> MetadataId {
-        let producers = self.intern_label_set_from_strings(&obj_meta.producers, false);
+        let producers = match &obj_meta.producers {
+            None => LabelSet::universal(),
+            Some(set) => self.intern_label_set_from_strings(set, false),
+        };
         let consumers = match &obj_meta.consumers {
             None => LabelSet::universal(),
             Some(set) => self.intern_label_set_from_strings(set, false),
         };
-        let tags = self.intern_label_set_from_strings(&obj_meta.tags, false);
+        let tags = match &obj_meta.tags {
+            None => LabelSet::universal(),
+            Some(set) => self.intern_label_set_from_strings(set, false),
+        };
 
         self.intern(Metadata {
             producers,
@@ -476,13 +504,21 @@ impl MetadataStore {
         }
         let meta = self.get(id);
         Some(ObjectMetadata {
-            producers: self.label_set_to_strings(&meta.producers),
+            producers: if meta.producers.is_universal() {
+                None
+            } else {
+                Some(self.label_set_to_strings(&meta.producers))
+            },
             consumers: if meta.consumers.is_universal() {
                 None
             } else {
                 Some(self.label_set_to_strings(&meta.consumers))
             },
-            tags: self.label_set_to_strings(&meta.tags),
+            tags: if meta.tags.is_universal() {
+                None
+            } else {
+                Some(self.label_set_to_strings(&meta.tags))
+            },
         })
     }
 
@@ -831,9 +867,9 @@ mod tests {
     fn store_object_metadata_roundtrip() {
         let mut store = MetadataStore::new();
         let obj = ObjectMetadata {
-            producers: BTreeSet::from(["source_a".to_string(), "source_b".to_string()]),
+            producers: Some(BTreeSet::from(["source_a".to_string(), "source_b".to_string()])),
             consumers: Some(BTreeSet::from(["consumer_x".to_string()])),
-            tags: BTreeSet::from(["pii".to_string()]),
+            tags: Some(BTreeSet::from(["pii".to_string()])),
         };
         let id = store.intern_object_metadata(&obj);
         let roundtripped = store.to_object_metadata(id).unwrap();
@@ -844,9 +880,9 @@ mod tests {
     fn store_object_metadata_universal_consumers_roundtrip() {
         let mut store = MetadataStore::new();
         let obj = ObjectMetadata {
-            producers: BTreeSet::from(["src".to_string()]),
+            producers: Some(BTreeSet::from(["src".to_string()])),
             consumers: None, // universal
-            tags: BTreeSet::new(),
+            tags: Some(BTreeSet::new()),
         };
         let id = store.intern_object_metadata(&obj);
         let roundtripped = store.to_object_metadata(id).unwrap();

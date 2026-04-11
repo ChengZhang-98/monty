@@ -8,6 +8,7 @@ if TYPE_CHECKING:
     from types import EllipsisType
 
 from ._monty import (
+    UNIVERSAL,
     AnnotatedValue,
     Frame,
     FunctionSnapshot,
@@ -23,6 +24,7 @@ from ._monty import (
     NameLookupSnapshot,
     NonSerializable,
     ObjectMetadata,
+    UniversalSet,
     __version__,
     load_repl_snapshot,
     load_snapshot,
@@ -39,6 +41,8 @@ __all__ = (
     '__version__',
     'AnnotatedValue',
     'ObjectMetadata',
+    'UniversalSet',
+    'UNIVERSAL',
     'Monty',
     'MontyRepl',
     'MontyComplete',
