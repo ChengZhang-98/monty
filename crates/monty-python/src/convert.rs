@@ -4,7 +4,7 @@
 //! - `py_to_monty`: Convert Python objects to Monty's `MontyObject` for input
 //! - `monty_to_py`: Convert Monty's `MontyObject` back to Python objects for output
 
-use ::monty::{MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
+use ::monty::{AnnotatedObject, MontyDate, MontyDateTime, MontyObject, MontyTimeDelta, MontyTimeZone};
 use monty::MontyException;
 use num_bigint::BigInt;
 use pyo3::{
@@ -21,6 +21,7 @@ use pyo3::{
 use crate::{
     dataclass::{DcRegistry, dataclass_to_monty, dataclass_to_py, is_dataclass},
     exceptions::{exc_monty_to_py, exc_to_monty_object, exc_type_to_py_type},
+    metadata::{PyAnnotatedValue, PyObjectMetadata, rust_meta_to_py},
     non_serializable::PyNonSerializable,
 };
 
@@ -347,6 +348,25 @@ pub fn monty_to_py_structured(py: Python<'_>, obj: &MontyObject, dc_registry: &D
         // All other types delegate to the standard conversion
         other => monty_to_py(py, other, dc_registry),
     }
+}
+
+/// Converts an [`AnnotatedObject`] to a Python [`PyAnnotatedValue`].
+///
+/// The inner value is converted via [`monty_to_py_structured`] (using
+/// `NonSerializable` wrappers for non-serializable types). Metadata is
+/// converted to a [`PyObjectMetadata`]; when the Rust metadata is `None`
+/// (DEFAULT provenance), a default `ObjectMetadata()` is created.
+pub fn annotated_to_py_structured(
+    py: Python<'_>,
+    obj: &AnnotatedObject,
+    dc_registry: &DcRegistry,
+) -> PyResult<Py<PyAny>> {
+    let py_value = monty_to_py_structured(py, &obj.value, dc_registry)?;
+    let meta_py = match &obj.metadata {
+        Some(m) => rust_meta_to_py(py, m)?,
+        None => Py::new(py, PyObjectMetadata::new(py, None, None, None)?)?,
+    };
+    Py::new(py, PyAnnotatedValue::new(py_value, meta_py)).map(Py::into_any)
 }
 
 pub fn import_builtins(py: Python<'_>) -> PyResult<&Py<PyModule>> {

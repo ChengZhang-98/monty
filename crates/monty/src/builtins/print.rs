@@ -1,11 +1,14 @@
 //! Implementation of the print() builtin function.
 
+use std::mem;
+
 use crate::{
     args::{ArgValues, KwargsValues},
     bytecode::VM,
     defer_drop,
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::HeapData,
+    metadata::AnnotatedObject,
     object::MontyObject,
     resource::ResourceTracker,
     types::PyTrait,
@@ -29,11 +32,23 @@ pub fn builtin_print(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues)
     let (sep, end) = extract_print_kwargs(kwargs, vm)?;
 
     if vm.print_writer.wants_structured() {
-        // Structured path: convert each Value to MontyObject and deliver all at once
-        let objects: Vec<MontyObject> = positional
+        // Structured path: convert each Value to AnnotatedObject with per-arg metadata.
+        // pending_arg_metadata was populated by pop_n_args before the builtin was called.
+        let arg_meta = mem::take(&mut vm.pending_arg_metadata);
+        debug_assert_eq!(
+            arg_meta.len(),
+            positional.as_slice().len(),
+            "pending_arg_metadata length should match positional arg count"
+        );
+        let objects: Vec<AnnotatedObject> = positional
             .as_slice()
             .iter()
-            .map(|value| MontyObject::from_value(value, vm))
+            .enumerate()
+            .map(|(i, value)| {
+                let meta_id = arg_meta.get(i).copied().unwrap_or_default();
+                let obj_meta = vm.metadata_store.to_object_metadata(meta_id);
+                AnnotatedObject::new(MontyObject::from_value(value, vm), obj_meta)
+            })
             .collect();
 
         let sep_str = sep.as_deref().unwrap_or(" ");

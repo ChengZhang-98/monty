@@ -298,6 +298,44 @@ else:
     pass
 ```
 
+## Reading metadata on `print()` callback arguments
+
+When using `structured_print_callback`, each argument is delivered as an
+`AnnotatedValue` — the same type used for inputs and external function args.
+This lets you inspect per-argument metadata at the print boundary:
+
+```python
+from pydantic_monty import AnnotatedValue, Monty, ObjectMetadata
+
+code = 'print(secret, "public text")'
+m = Monty(code, inputs=['secret'])
+
+secret_meta = ObjectMetadata(
+    producers=frozenset({'vault'}),
+    consumers=frozenset({'admin'}),
+)
+
+def on_print(stream, objects, sep, end):
+    for obj in objects:
+        assert isinstance(obj, AnnotatedValue)
+        if obj.metadata.consumers is not None:
+            allowed = obj.metadata.consumers
+            print(f'  restricted to: {allowed}')
+        print(f'  value: {obj.value!r}')
+
+m.run(
+    inputs={'secret': AnnotatedValue('top-secret', secret_meta)},
+    structured_print_callback=on_print,
+)
+# Output:
+#   restricted to: frozenset({'admin'})
+#   value: 'top-secret'
+#   value: 'public text'
+```
+
+Literal arguments (like `"public text"` above) carry DEFAULT metadata — empty
+producers, universal consumers (`None`), and empty tags.
+
 ## Limitations
 
 - **MontyRepl sync output**: `MontyRepl.feed_run` returns a plain value (no

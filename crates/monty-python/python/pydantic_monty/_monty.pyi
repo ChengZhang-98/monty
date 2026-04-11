@@ -131,7 +131,7 @@ class Monty:
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[AnnotatedValue], str, str], None] | None = None,
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[OsFunction, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
@@ -146,7 +146,8 @@ class Monty:
             external_functions: Dict of external function callbacks
             print_callback: Optional callback for print output (per-fragment strings)
             structured_print_callback: Optional callback for structured print output
-                (called once per ``print()`` with all args as native Python objects).
+                (called once per ``print()`` with all args as ``AnnotatedValue`` objects,
+                each bundling the value with its provenance metadata).
                 Cannot be used together with ``print_callback``.
             os: Optional callback for OS calls.
                 Called with (function_name, args) where function_name is like 'Path.exists'
@@ -166,7 +167,7 @@ class Monty:
         inputs: dict[str, Any] | None = None,
         limits: ResourceLimits | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[AnnotatedValue], str, str], None] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
         Start the code execution and return a progress object, or completion.
@@ -181,8 +182,8 @@ class Monty:
             print_callback: Optional callback for print output (per-fragment strings)
             structured_print_callback: Optional callback for structured print output,
                 called once per ``print()`` as ``(stream, objects, sep, end)`` where
-                objects is a list of native Python values. Cannot be used together
-                with ``print_callback``.
+                objects is a list of ``AnnotatedValue`` (value + metadata). Cannot be
+                used together with ``print_callback``.
 
         Returns:
             FunctionSnapshot if an external function call is pending,
@@ -201,7 +202,7 @@ class Monty:
         limits: ResourceLimits | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[AnnotatedValue], str, str], None] | None = None,
         os: AbstractOS | None = None,
     ) -> Coroutine[Any, Any, Any]:
         """
@@ -217,8 +218,8 @@ class Monty:
             print_callback: Optional callback for print output (per-fragment strings)
             structured_print_callback: Optional callback for structured print output,
                 called once per ``print()`` as ``(stream, objects, sep, end)`` where
-                objects is a list of native Python values. Cannot be used together
-                with ``print_callback``.
+                objects is a list of ``AnnotatedValue`` (value + metadata). Cannot be
+                used together with ``print_callback``.
             os: Optional OS access handler for filesystem operations
 
         Returns:
@@ -318,7 +319,7 @@ class MontyRepl:
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[AnnotatedValue], str, str], None] | None = None,
         mount: MountDir | list[MountDir] | None = None,
         os: Callable[[str, tuple[Any, ...], dict[str, Any]], Any] | None = None,
     ) -> Any:
@@ -339,8 +340,8 @@ class MontyRepl:
             print_callback: Optional callback for print output (per-fragment strings)
             structured_print_callback: Optional callback for structured print output,
                 called once per ``print()`` as ``(stream, objects, sep, end)`` where
-                objects is a list of native Python values. Cannot be used together
-                with ``print_callback``.
+                objects is a list of ``AnnotatedValue`` (value + metadata). Cannot be
+                used together with ``print_callback``.
             mount: Optional mount directory or list of mount directories
             os: Optional callback for OS calls
         """
@@ -352,7 +353,7 @@ class MontyRepl:
         inputs: dict[str, Any] | None = None,
         external_functions: dict[str, Callable[..., Any]] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[AnnotatedValue], str, str], None] | None = None,
         os: AbstractOS | None = None,
     ) -> Coroutine[Any, Any, Any]:
         """
@@ -368,8 +369,8 @@ class MontyRepl:
             print_callback: Optional callback for print output (per-fragment strings)
             structured_print_callback: Optional callback for structured print output,
                 called once per ``print()`` as ``(stream, objects, sep, end)`` where
-                objects is a list of native Python values. Cannot be used together
-                with ``print_callback``.
+                objects is a list of ``AnnotatedValue`` (value + metadata). Cannot be
+                used together with ``print_callback``.
             os: Optional OS access handler for filesystem operations
 
         Returns:
@@ -385,7 +386,7 @@ class MontyRepl:
         *,
         inputs: dict[str, Any] | None = None,
         print_callback: Callable[[Literal['stdout'], str], None] | None = None,
-        structured_print_callback: Callable[[Literal['stdout'], list[Any], str, str], None] | None = None,
+        structured_print_callback: Callable[[Literal['stdout'], list[AnnotatedValue], str, str], None] | None = None,
     ) -> FunctionSnapshot | NameLookupSnapshot | FutureSnapshot | MontyComplete:
         """
         Start executing an incremental snippet, yielding snapshots for external calls.
@@ -407,8 +408,8 @@ class MontyRepl:
             print_callback: Optional callback for print output (per-fragment strings)
             structured_print_callback: Optional callback for structured print output,
                 called once per ``print()`` as ``(stream, objects, sep, end)`` where
-                objects is a list of native Python values. Cannot be used together
-                with ``print_callback``.
+                objects is a list of ``AnnotatedValue`` (value + metadata). Cannot be
+                used together with ``print_callback``.
         """
 
     def dump(self) -> bytes:
