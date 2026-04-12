@@ -8,6 +8,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, HeapData},
+    metadata::MetadataId,
     resource::ResourceTracker,
     types::{List, MontyIter},
     value::Value,
@@ -41,14 +42,14 @@ pub fn builtin_map(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
     defer_drop!(function, vm);
 
     let first_iterable = positional.next().expect("checked length above");
-    let first_iter = MontyIter::new(first_iterable, vm)?;
+    let first_iter = MontyIter::new(first_iterable, vm, MetadataId::DEFAULT)?;
     defer_drop_mut!(first_iter, vm);
 
     let extra_iterators: Vec<MontyIter> = Vec::with_capacity(positional.len());
     defer_drop_mut!(extra_iterators, vm);
 
     for iterable in positional {
-        extra_iterators.push(MontyIter::new(iterable, vm)?);
+        extra_iterators.push(MontyIter::new(iterable, vm, MetadataId::DEFAULT)?);
     }
 
     let mut out = Vec::with_capacity(first_iter.size_hint(vm.heap));

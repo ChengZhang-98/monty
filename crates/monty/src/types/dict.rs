@@ -530,13 +530,11 @@ impl Dict {
     }
 
     /// Returns the metadata for the value at the given index.
-    #[expect(dead_code)]
     pub fn value_meta_at(&self, index: usize) -> MetadataId {
         self.entries[index].value_meta
     }
 
     /// Returns the metadata for the key at the given index.
-    #[expect(dead_code)]
     pub fn key_meta_at(&self, index: usize) -> MetadataId {
         self.entries[index].key_meta
     }
@@ -669,11 +667,11 @@ impl<'h> HeapRead<'h, Dict> {
         iterable: Value,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> RunResult<()> {
-        let iter = MontyIter::new(iterable, vm)?;
+        let iter = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?;
         defer_drop_mut!(iter, vm);
 
         while let Some(item) = iter.for_next(vm)? {
-            let pair_iter = MontyIter::new(item, vm)?;
+            let pair_iter = MontyIter::new(item, vm, MetadataId::DEFAULT)?;
             defer_drop_mut!(pair_iter, vm);
 
             let Some(key) = pair_iter.for_next(vm)? else {
@@ -1152,12 +1150,12 @@ fn dict_merge_from_iterable_pairs(
     iterable: Value,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<()> {
-    let iter = MontyIter::new(iterable, vm)?;
+    let iter = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?;
     defer_drop_mut!(iter, vm);
 
     while let Some(item) = iter.for_next(vm)? {
         // Each item should be a pair (iterable of 2 elements).
-        let pair_iter = MontyIter::new(item, vm)?;
+        let pair_iter = MontyIter::new(item, vm, MetadataId::DEFAULT)?;
         defer_drop_mut!(pair_iter, vm);
 
         let Some(key) = pair_iter.for_next(vm)? else {
@@ -1314,7 +1312,7 @@ pub fn dict_fromkeys(args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>)
     let default = default.unwrap_or(Value::None);
     defer_drop!(default, vm);
 
-    let iter = MontyIter::new(iterable, vm)?;
+    let iter = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?;
     defer_drop_mut!(iter, vm);
 
     let dict = Dict::new();

@@ -5,6 +5,7 @@ use crate::{
     bytecode::VM,
     defer_drop, defer_drop_mut,
     exception_private::RunResult,
+    metadata::MetadataId,
     resource::ResourceTracker,
     types::{MontyIter, PyTrait},
     value::Value,
@@ -16,7 +17,7 @@ use crate::{
 /// Returns False for an empty iterable. Short-circuits on the first truthy value.
 pub fn builtin_any(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let iterable = args.get_one_arg("any", vm.heap)?;
-    let iter = MontyIter::new(iterable, vm)?;
+    let iter = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?;
     defer_drop_mut!(iter, vm);
 
     while let Some(item) = iter.for_next(vm)? {

@@ -242,7 +242,7 @@ impl List {
                 Ok(Value::Ref(heap_id))
             }
             Some(v) => {
-                let items = MontyIter::new(v, vm)?.collect(vm)?;
+                let items = MontyIter::new(v, vm, MetadataId::DEFAULT)?.collect(vm)?;
                 let heap_id = vm.heap.allocate(HeapData::List(Self::new(items)))?;
                 Ok(Value::Ref(heap_id))
             }
@@ -696,7 +696,7 @@ fn list_extend<'h>(
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     let iterable = args.get_one_arg("list.extend", vm.heap)?;
-    let items: SmallVec<[_; 2]> = MontyIter::new(iterable, vm)?.collect(vm)?;
+    let items: SmallVec<[_; 2]> = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?.collect(vm)?;
 
     // Batch memory check for all items at once, then extend
     vm.heap.track_growth(items.len() * VALUE_SIZE)?;

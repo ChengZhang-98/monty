@@ -617,3 +617,147 @@ fn metadata_merge_only_one_operand_has_metadata() {
     assert_eq!(value, MontyObject::Int(15));
     assert_eq!(out_meta, Some(input_meta));
 }
+
+// === Container-level metadata propagation through indexing ===
+
+#[test]
+fn metadata_container_level_propagates_through_indexing() {
+    // When a list has container-level metadata (e.g. from an external function return)
+    // but elements have DEFAULT per-element metadata, indexing should propagate the
+    // container's metadata to the extracted element.
+    let container_meta = meta(Some(&["web_api"]), Some(&["admin"]), Some(&["untrusted"]));
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(10), None),
+        AnnotatedObject::new(MontyObject::Int(20), None),
+    ]);
+    let input = AnnotatedObject::new(input_list, Some(container_meta.clone()));
+
+    let (value, out_meta) = run_with_meta("x[0]", vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(10));
+    assert_eq!(out_meta, Some(container_meta));
+}
+
+#[test]
+fn metadata_container_level_merges_with_element_metadata_on_indexing() {
+    // When both the container and element have metadata, indexing should merge them:
+    // producers = union, consumers = intersection, tags = union.
+    let container_meta = meta(Some(&["api"]), Some(&["admin", "user"]), Some(&["external"]));
+    let elem_meta = meta(Some(&["db"]), Some(&["admin"]), Some(&["pii"]));
+    let input_list = MontyObject::List(vec![AnnotatedObject::new(MontyObject::Int(42), Some(elem_meta))]);
+    let input = AnnotatedObject::new(input_list, Some(container_meta));
+
+    let (value, out_meta) = run_with_meta("x[0]", vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(42));
+    let out = out_meta.expect("merged metadata should be present");
+    assert_eq!(
+        out.producers,
+        Some(BTreeSet::from(["api".to_string(), "db".to_string()]))
+    );
+    assert_eq!(out.consumers, Some(BTreeSet::from(["admin".to_string()])));
+    assert_eq!(
+        out.tags,
+        Some(BTreeSet::from(["external".to_string(), "pii".to_string()]))
+    );
+}
+
+#[test]
+fn metadata_container_level_propagates_through_negative_indexing() {
+    // Negative indexing (x[-1]) should also propagate container metadata.
+    let container_meta = meta(Some(&["src"]), None, Some(&["tagged"]));
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(1), None),
+        AnnotatedObject::new(MontyObject::Int(2), None),
+    ]);
+    let input = AnnotatedObject::new(input_list, Some(container_meta.clone()));
+
+    let (value, out_meta) = run_with_meta("x[-1]", vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(2));
+    assert_eq!(out_meta, Some(container_meta));
+}
+
+// === Container-level metadata propagation through iteration ===
+
+#[test]
+fn metadata_container_level_propagates_through_for_loop() {
+    // When iterating a list with container-level metadata, each yielded element
+    // should carry the container's metadata.
+    let container_meta = meta(Some(&["web_api"]), Some(&["admin"]), Some(&["untrusted"]));
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(10), None),
+        AnnotatedObject::new(MontyObject::Int(20), None),
+    ]);
+    let input = AnnotatedObject::new(input_list, Some(container_meta.clone()));
+
+    // Sum the elements via iteration — metadata should propagate through the loop variable
+    let code = "total = 0\nfor item in x:\n    total = total + item\ntotal";
+    let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(30));
+    assert_eq!(out_meta, Some(container_meta));
+}
+
+#[test]
+fn metadata_container_level_propagates_through_iteration_single_element() {
+    // Single-element iteration should also propagate container metadata.
+    let container_meta = meta(Some(&["vault"]), Some(&["internal"]), Some(&["secret"]));
+    let input_list = MontyObject::List(vec![AnnotatedObject::new(MontyObject::Int(42), None)]);
+    let input = AnnotatedObject::new(input_list, Some(container_meta.clone()));
+
+    let code = "result = None\nfor item in x:\n    result = item\nresult";
+    let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(42));
+    assert_eq!(out_meta, Some(container_meta));
+}
+
+// === Container-level metadata propagates through indexing then further operations ===
+
+#[test]
+fn metadata_container_level_propagates_through_indexing_then_concatenation() {
+    // x[0] + " world" should carry x's container metadata through the binary op.
+    // This tests the chain: container meta → index → binary operation.
+    let container_meta = meta(Some(&["api"]), None, Some(&["non_executable"]));
+    let input_list = MontyObject::List(vec![AnnotatedObject::new(
+        MontyObject::String("hello".to_string()),
+        None,
+    )]);
+    let input = AnnotatedObject::new(input_list, Some(container_meta.clone()));
+
+    let code = "x[0] + ' world'";
+    let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::String("hello world".to_string()));
+    assert_eq!(out_meta, Some(container_meta));
+}
+
+// === Container-level metadata propagates through f-string after indexing ===
+
+#[test]
+fn metadata_container_level_propagates_through_indexing_then_fstring() {
+    // f"info: {x[0]}" should carry x's container metadata.
+    let container_meta = meta(Some(&["vault"]), Some(&["admin"]), Some(&["secret"]));
+    let input_list = MontyObject::List(vec![AnnotatedObject::new(
+        MontyObject::String("data".to_string()),
+        None,
+    )]);
+    let input = AnnotatedObject::new(input_list, Some(container_meta.clone()));
+
+    let code = "f'info: {x[0]}'";
+    let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::String("info: data".to_string()));
+    assert_eq!(out_meta, Some(container_meta));
+}
+
+// === Tuple container-level metadata ===
+
+#[test]
+fn metadata_tuple_container_level_propagates_through_indexing() {
+    // Same as list test but with a tuple container.
+    let container_meta = meta(Some(&["src"]), None, Some(&["tagged"]));
+    let input_tuple = MontyObject::Tuple(vec![
+        AnnotatedObject::new(MontyObject::Int(1), None),
+        AnnotatedObject::new(MontyObject::Int(2), None),
+    ]);
+    let input = AnnotatedObject::new(input_tuple, Some(container_meta.clone()));
+
+    let (value, out_meta) = run_with_meta("x[1]", vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(2));
+    assert_eq!(out_meta, Some(container_meta));
+}

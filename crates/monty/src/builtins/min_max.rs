@@ -9,6 +9,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::HeapGuard,
     heap_traits::DropWithHeap,
+    metadata::MetadataId,
     resource::ResourceTracker,
     types::{MontyIter, PyTrait},
     value::Value,
@@ -66,7 +67,7 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
     // decide what to do based on remaining arguments
     if positional.len() == 0 {
         // Single argument: iterate over it
-        let iter = MontyIter::new(first_arg, vm)?;
+        let iter = MontyIter::new(first_arg, vm, MetadataId::DEFAULT)?;
         defer_drop_mut!(iter, vm);
 
         let Some(result) = iter.for_next(vm)? else {

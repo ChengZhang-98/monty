@@ -13,6 +13,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::RunResult,
     heap::{HeapData, HeapGuard},
+    metadata::MetadataId,
     resource::ResourceTracker,
     types::{List, MontyIter, PyTrait},
     value::Value,
@@ -34,7 +35,7 @@ pub fn builtin_filter(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
     let (function, iterable) = args.get_two_args("filter", vm.heap)?;
     defer_drop!(function, vm);
 
-    let iter = MontyIter::new(iterable, vm)?;
+    let iter = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?;
     defer_drop_mut!(iter, vm);
 
     let out: Vec<Value> = Vec::new();

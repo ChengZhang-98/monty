@@ -5,6 +5,7 @@ use crate::{
     bytecode::VM,
     exception_private::RunResult,
     heap::HeapData,
+    metadata::MetadataId,
     resource::ResourceTracker,
     types::{List, MontyIter},
     value::Value,
@@ -18,7 +19,7 @@ pub fn builtin_reversed(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValu
     let value = args.get_one_arg("reversed", vm.heap)?;
 
     // Collect all items
-    let mut items: Vec<_> = MontyIter::new(value, vm)?.collect(vm)?;
+    let mut items: Vec<_> = MontyIter::new(value, vm, MetadataId::DEFAULT)?.collect(vm)?;
 
     // Reverse in place
     items.reverse();

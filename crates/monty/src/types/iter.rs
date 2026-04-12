@@ -22,6 +22,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::{BytesId, Interns},
+    metadata::MetadataId,
     resource::ResourceTracker,
     types::{PyTrait, Range, dict_view::DictView, str::allocate_char},
     value::Value,
@@ -33,6 +34,11 @@ use crate::{
 /// Uses index-based iteration to avoid borrow conflicts when accessing the heap.
 ///
 /// For strings, stores the string content with a byte offset for O(1) UTF-8 iteration.
+///
+/// `container_meta` captures the metadata that was on the container variable when
+/// the iterator was created. This is merged with per-element metadata when yielding
+/// values, so that metadata attached to the container as a whole (e.g. from an
+/// external function return) propagates to individual elements.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct MontyIter {
     /// Current iteration index, shared across all iterator types.
@@ -41,6 +47,13 @@ pub struct MontyIter {
     iter_value: IterValue,
     /// the actual Value being iterated over.
     value: Value,
+    /// Metadata from the container that produced this iterator.
+    ///
+    /// Merged with per-element metadata when yielding values via `advance()`,
+    /// ensuring container-level metadata (e.g. tags from an external function return)
+    /// propagates to extracted elements.
+    #[serde(default)]
+    container_meta: MetadataId,
 }
 
 impl MontyIter {
@@ -68,18 +81,26 @@ impl MontyIter {
             return Ok(iterable);
         }
 
-        // Create new iterator
-        let iter = Self::new(iterable, vm)?;
+        // Create new iterator — called from builtin iter(), no stack-level metadata available
+        let iter = Self::new(iterable, vm, MetadataId::DEFAULT)?;
         let id = vm.heap.allocate(HeapData::Iter(iter))?;
         Ok(Value::Ref(id))
     }
 
-    /// Creates a new MontyIter from a Value.
+    /// Creates a new MontyIter from a Value with its associated metadata.
+    ///
+    /// `container_meta` is the metadata from the container variable on the operand stack.
+    /// It is stored in the iterator and merged with per-element metadata when yielding
+    /// values, ensuring container-level metadata propagates to extracted elements.
     ///
     /// Returns an error if the value is not iterable.
     /// For strings, copies the string content for byte-offset based iteration.
     /// For ranges, the data is copied so the heap reference is dropped immediately.
-    pub fn new(mut value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
+    pub fn new(
+        mut value: Value,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
+        container_meta: MetadataId,
+    ) -> RunResult<Self> {
         if let Some(iter_value) = IterValue::new(&value, vm) {
             // For Range, we copy next/step/len into ForIterValue::Range, so we don't need
             // to keep the heap object alive during iteration. Drop it immediately to avoid
@@ -93,6 +114,7 @@ impl MontyIter {
                 index: 0,
                 iter_value,
                 value,
+                container_meta,
             })
         } else {
             let err = ExcType::type_error_not_iterable(value.py_type(vm));
@@ -188,9 +210,7 @@ impl MontyIter {
                 }
                 let i = self.index;
                 let expected_len = if *checks_mutation { *len } else { None };
-                let item = get_heap_item(vm, *heap_id, i, expected_len)?;
-                // Check for list exhaustion (list can shrink during iteration)
-                let Some(item) = item else {
+                let Some((item, _meta)) = get_heap_item(vm, *heap_id, i, expected_len)? else {
                     return Ok(None);
                 };
                 self.index += 1;
@@ -249,12 +269,21 @@ impl<T: ResourceTracker> Iterator for HeapedMontyIter<'_, '_, '_, T> {
 }
 
 impl<'h> HeapRead<'h, MontyIter> {
-    /// Advances an iterator and returns the next value.
+    /// Advances an iterator and returns the next value with its metadata.
+    ///
+    /// The returned `MetadataId` is the **merged** result of the container-level metadata
+    /// (captured when the iterator was created) and the per-element metadata stored inside
+    /// the container. For non-heap types (Range, IterStr, InternBytes), per-element metadata
+    /// is always DEFAULT, so the result is just the container metadata.
     ///
     /// Returns `Ok(None)` when the iterator is exhausted.
     /// Returns `Err` for dict/set size changes or allocation failures.
-    pub(crate) fn advance(&mut self, vm: &mut VM<'h, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    pub(crate) fn advance(
+        &mut self,
+        vm: &mut VM<'h, '_, impl ResourceTracker>,
+    ) -> RunResult<Option<(Value, MetadataId)>> {
         let this = self.get_mut(vm.heap);
+        let container_meta = this.container_meta;
         match &mut this.iter_value {
             IterValue::Range { next, step, len } => {
                 if this.index >= *len {
@@ -263,7 +292,7 @@ impl<'h> HeapRead<'h, MontyIter> {
                     let value = *next;
                     *next += *step;
                     this.index += 1;
-                    Ok(Some(Value::Int(value)))
+                    Ok(Some((Value::Int(value), container_meta)))
                 }
             }
             IterValue::IterStr {
@@ -281,7 +310,7 @@ impl<'h> HeapRead<'h, MontyIter> {
                         .expect("index < len implies char exists");
                     this.index += 1;
                     *byte_offset += c.len_utf8();
-                    Ok(Some(allocate_char(c, vm.heap)?))
+                    Ok(Some((allocate_char(c, vm.heap)?, container_meta)))
                 }
             }
             IterValue::InternBytes { bytes_id, len } => {
@@ -291,7 +320,7 @@ impl<'h> HeapRead<'h, MontyIter> {
                     let i = this.index;
                     this.index += 1;
                     let bytes = vm.interns.get_bytes(*bytes_id);
-                    Ok(Some(Value::Int(i64::from(bytes[i]))))
+                    Ok(Some((Value::Int(i64::from(bytes[i])), container_meta)))
                 }
             }
             IterValue::HeapRef {
@@ -308,20 +337,23 @@ impl<'h> HeapRead<'h, MontyIter> {
                 let heap_id = *heap_id;
                 let expected_len = if *checks_mutation { *len } else { None };
                 let index = this.index;
-                let item = get_heap_item(vm, heap_id, index, expected_len)?;
-
-                // Check for list exhaustion (list can shrink during iteration)
-                let Some(item) = item else {
+                let Some((item, elem_meta)) = get_heap_item(vm, heap_id, index, expected_len)? else {
                     return Ok(None);
                 };
                 self.get_mut(vm.heap).index += 1;
-                Ok(Some(item))
+                let merged = vm.metadata_store.merge(container_meta, elem_meta);
+                Ok(Some((item, merged)))
             }
         }
     }
 }
 
-/// Gets an item from a heap-allocated container at the given index.
+/// Gets an item and its per-element metadata from a heap-allocated container at the given index.
+///
+/// Returns the value paired with its per-element metadata. For container types that track
+/// per-element metadata (List, Tuple, NamedTuple, Dict), the stored metadata is returned.
+/// For types without per-element metadata (Set, FrozenSet, Bytes, DictViews), returns
+/// `MetadataId::DEFAULT`.
 ///
 /// Returns `Ok(None)` if the index is out of bounds (for lists that shrunk during iteration).
 /// Returns `Err` if a dict/set changed size during iteration (RuntimeError).
@@ -330,17 +362,24 @@ fn get_heap_item(
     heap_id: HeapId,
     index: usize,
     expected_len: Option<usize>,
-) -> RunResult<Option<Value>> {
+) -> RunResult<Option<(Value, MetadataId)>> {
     match vm.heap.get(heap_id) {
         HeapData::List(list) => {
             // Check if list shrunk during iteration
             if index >= list.len() {
                 return Ok(None);
             }
-            Ok(Some(list.as_slice()[index].clone_with_heap(vm)))
+            let meta = list.item_meta(index);
+            Ok(Some((list.as_slice()[index].clone_with_heap(vm), meta)))
         }
-        HeapData::Tuple(tuple) => Ok(Some(tuple.as_slice()[index].clone_with_heap(vm))),
-        HeapData::NamedTuple(namedtuple) => Ok(Some(namedtuple.as_vec()[index].clone_with_heap(vm))),
+        HeapData::Tuple(tuple) => {
+            let meta = tuple.item_meta(index);
+            Ok(Some((tuple.as_slice()[index].clone_with_heap(vm), meta)))
+        }
+        HeapData::NamedTuple(namedtuple) => {
+            let meta = namedtuple.item_meta(index);
+            Ok(Some((namedtuple.as_vec()[index].clone_with_heap(vm), meta)))
+        }
         HeapData::Dict(dict) => {
             // Check for dict mutation
             if let Some(expected) = expected_len
@@ -348,9 +387,12 @@ fn get_heap_item(
             {
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
-            Ok(Some(
+            // Iterating a dict yields keys; return the key's metadata
+            let meta = dict.key_meta_at(index);
+            Ok(Some((
                 dict.key_at(index).expect("index should be valid").clone_with_heap(vm),
-            ))
+                meta,
+            )))
         }
         HeapData::DictKeysView(view) => {
             let dict = view.dict(vm.heap);
@@ -359,9 +401,11 @@ fn get_heap_item(
             {
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
-            Ok(Some(
+            let meta = dict.key_meta_at(index);
+            Ok(Some((
                 dict.key_at(index).expect("index should be valid").clone_with_heap(vm),
-            ))
+                meta,
+            )))
         }
         HeapData::DictItemsView(view) => {
             let dict = view.dict(vm.heap);
@@ -371,10 +415,14 @@ fn get_heap_item(
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
             let (key, value) = dict.item_at(index).expect("index should be valid");
-            Ok(Some(super::allocate_tuple(
-                smallvec::smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)],
-                vm.heap,
-            )?))
+            // Items view yields (key, value) tuples; no per-element metadata on the tuple itself
+            Ok(Some((
+                super::allocate_tuple(
+                    smallvec::smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)],
+                    vm.heap,
+                )?,
+                MetadataId::DEFAULT,
+            )))
         }
         HeapData::DictValuesView(view) => {
             let dict = view.dict(vm.heap);
@@ -383,11 +431,16 @@ fn get_heap_item(
             {
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
-            Ok(Some(
+            let meta = dict.value_meta_at(index);
+            Ok(Some((
                 dict.value_at(index).expect("index should be valid").clone_with_heap(vm),
-            ))
+                meta,
+            )))
         }
-        HeapData::Bytes(bytes) => Ok(Some(Value::Int(i64::from(bytes.as_slice()[index])))),
+        HeapData::Bytes(bytes) => Ok(Some((
+            Value::Int(i64::from(bytes.as_slice()[index])),
+            MetadataId::DEFAULT,
+        ))),
         HeapData::Set(set) => {
             // Check for set mutation
             if let Some(expected) = expected_len
@@ -395,20 +448,22 @@ fn get_heap_item(
             {
                 return Err(ExcType::runtime_error_set_changed_size());
             }
-            Ok(Some(
+            Ok(Some((
                 set.storage()
                     .value_at(index)
                     .expect("index should be valid")
                     .clone_with_heap(vm),
-            ))
+                MetadataId::DEFAULT,
+            )))
         }
-        HeapData::FrozenSet(frozenset) => Ok(Some(
+        HeapData::FrozenSet(frozenset) => Ok(Some((
             frozenset
                 .storage()
                 .value_at(index)
                 .expect("index should be valid")
                 .clone_with_heap(vm),
-        )),
+            MetadataId::DEFAULT,
+        ))),
         _ => panic!("get_heap_item: unexpected heap data type"),
     }
 }
@@ -449,9 +504,9 @@ pub fn iterator_next(
         }
     };
 
-    // Get next item using the MontyIter::advance_on_heap method
+    // Get next item using the MontyIter::advance method
     match result {
-        Some(item) => Ok(item),
+        Some((item, _meta)) => Ok(item),
         None => {
             // Iterator exhausted
             match default_guard.into_inner() {

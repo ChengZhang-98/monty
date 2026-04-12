@@ -255,7 +255,8 @@ Metadata flows automatically through these operations — no user action needed:
 | `a, b = lst` | Each variable gets its element's per-element metadata |
 | `[*x]`, `(*x,)`, `{*x}` | Elements preserve their per-element metadata |
 | `{**d}`, `f(**kwargs)` | Keys and values preserve their per-entry metadata |
-| `lst[i]`, `d[key]` | Result carries the specific element's metadata |
+| `lst[i]`, `d[key]` | `merge(container.meta, element.meta)` — container-level metadata is merged with per-element metadata |
+| `for x in lst` | Each `x` gets `merge(container.meta, element.meta)` |
 | `not x`, `-x` | Result carries `x`'s metadata |
 
 ### What does NOT propagate (yet)
@@ -282,8 +283,28 @@ consumers, empty tags), and merging with DEFAULT is an identity operation.
 
 ## Per-element container metadata
 
-Containers track metadata **per element**, not at the container level. This
-prevents false tainting:
+Containers track metadata at **two levels**:
+
+1. **Container-level metadata** — on the container variable itself (e.g. metadata
+   from an external function return via `AnnotatedValue`)
+2. **Per-element metadata** — stored alongside each element inside the container
+
+When you extract an element (via indexing or iteration), both levels are
+**merged**:
+
+```python
+# External function returns a list with container-level metadata
+results = web_search("query")
+# results has tags={'__non_executable'} (from AnnotatedValue)
+# results[0] has per-element metadata = DEFAULT (elements created on the host)
+
+x = results[0]
+# x.metadata.tags == {'__non_executable'}
+# (merge of container metadata with DEFAULT element metadata = container metadata)
+```
+
+Per-element metadata prevents false tainting when elements are built *inside*
+the sandbox with independent provenance:
 
 ```python
 secret = get_secret()   # producers={'vault'}, consumers={'admin'}
@@ -293,8 +314,12 @@ lst = [secret, public]
 x = lst[1]              # x gets public's metadata (default), NOT merged with secret's
 ```
 
-This means you can safely put restricted and unrestricted data in the same
-container — extracting an element gives you only *that element's* metadata.
+This works because the list `lst` has DEFAULT container-level metadata (it was
+built in-sandbox, not from an external function), so merging DEFAULT with the
+element's metadata is an identity operation.
+
+When both levels have non-default metadata, the merge follows the standard
+rules: union for producers/tags, intersection for consumers.
 
 ## Checking metadata on output
 
@@ -367,9 +392,6 @@ producers, `UNIVERSAL` consumers, and empty tags.
   `MontyComplete`), so output metadata is not directly accessible on the sync
   path. However, metadata is tracked internally and persists across snippets.
   Use `feed_start` for output metadata via `MontyComplete.metadata`.
-- **`for` loop iteration**: The `for x in iterable` loop does not currently
-  propagate per-element metadata from the iterable to `x`. This requires
-  changes to the iterator protocol.
 - **Default arguments**: When a function parameter uses a default value, the
   default's metadata is not propagated. Parameters without an explicit argument
   get `DEFAULT` metadata.

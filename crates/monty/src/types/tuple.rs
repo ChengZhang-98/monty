@@ -142,7 +142,7 @@ impl Tuple {
                 Ok(vm.heap.get_empty_tuple())
             }
             Some(v) => {
-                let items = MontyIter::new(v, vm)?.collect(vm)?;
+                let items = MontyIter::new(v, vm, MetadataId::DEFAULT)?.collect(vm)?;
                 Ok(allocate_tuple(items, vm.heap)?)
             }
         }

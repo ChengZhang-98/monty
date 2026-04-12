@@ -8,6 +8,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapGuard,
+    metadata::MetadataId,
     resource::ResourceTracker,
     types::{MontyIter, PyTrait, Type},
     value::Value,
@@ -22,7 +23,7 @@ pub fn builtin_sum(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
     let (iterable, start) = args.get_one_two_args("sum", vm.heap)?;
     defer_drop_mut!(start, vm);
 
-    let iter = MontyIter::new(iterable, vm)?;
+    let iter = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?;
     defer_drop_mut!(iter, vm);
 
     // Get the start value, defaulting to 0

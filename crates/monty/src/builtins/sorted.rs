@@ -8,6 +8,7 @@ use crate::{
     defer_drop,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, HeapData, HeapGuard},
+    metadata::MetadataId,
     resource::ResourceTracker,
     sorting::{apply_permutation, sort_indices},
     types::{List, MontyIter, PyTrait},
@@ -23,7 +24,7 @@ pub fn builtin_sorted(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues
     let (iterable, key_fn, reverse) = parse_sorted_args(args, vm)?;
     defer_drop!(key_fn, vm);
 
-    let items: Vec<_> = MontyIter::new(iterable, vm)?.collect(vm)?;
+    let items: Vec<_> = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?.collect(vm)?;
     let mut items_guard = HeapGuard::new(items, vm);
     let (items, vm) = items_guard.as_parts_mut();
 

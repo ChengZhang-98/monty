@@ -1368,9 +1368,10 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 }
                 // Iteration - route through exception handling
                 Opcode::GetIter => {
-                    let value = self.pop();
-                    // Create a MontyIter from the value and store on heap
-                    match MontyIter::new(value, self) {
+                    let (value, container_meta) = self.pop_with_meta();
+                    // Create a MontyIter from the value, carrying the container's metadata
+                    // so it propagates to yielded elements in FOR_ITER.
+                    match MontyIter::new(value, self, container_meta) {
                         Ok(iter) => match self.heap.allocate(HeapData::Iter(iter)) {
                             Ok(heap_id) => self.push(Value::Ref(heap_id)),
                             Err(e) => catch_sync!(self, cached_frame, e.into()),
@@ -1389,7 +1390,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                     };
 
                     match iter.advance(self) {
-                        Ok(Some(value)) => self.push(value),
+                        Ok(Some((value, meta))) => self.push_with_meta(value, meta),
                         Ok(None) => {
                             // Drop the HeapRead before dec_ref to release the reader count
                             drop(iter);
@@ -2161,58 +2162,71 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         cell_data.meta = value_meta;
     }
 
-    /// Resolves element-level metadata for subscript access on List/Tuple.
+    /// Resolves metadata for subscript access by merging container-level metadata
+    /// with per-element metadata.
     ///
-    /// For integer indexing into List or Tuple, looks up the element's metadata
-    /// from the container's parallel metadata vec. Falls back to `fallback_meta`
-    /// for non-integer keys, slices, or non-list/tuple containers.
-    fn resolve_subscr_meta(&self, obj: &Value, key: &Value, fallback_meta: MetadataId) -> MetadataId {
+    /// For List, Tuple, and Dict containers, looks up the element's per-element
+    /// metadata and merges it with the container's stack-level metadata (`container_meta`).
+    /// This ensures that metadata attached to the container as a whole (e.g. from an
+    /// external function return) propagates to extracted elements, while also preserving
+    /// any per-element metadata that was set individually.
+    ///
+    /// For non-container types or unsupported key types, returns `container_meta` unchanged.
+    fn resolve_subscr_meta(&mut self, obj: &Value, key: &Value, container_meta: MetadataId) -> MetadataId {
+        let elem_meta = self.lookup_element_meta(obj, key);
+        self.metadata_store.merge(container_meta, elem_meta)
+    }
+
+    /// Looks up per-element metadata for a subscript operation without merging.
+    ///
+    /// Returns `MetadataId::DEFAULT` if the container type doesn't support per-element
+    /// metadata, the key type is unsupported, or the index is out of bounds.
+    fn lookup_element_meta(&self, obj: &Value, key: &Value) -> MetadataId {
         let Value::Ref(obj_id) = obj else {
-            return fallback_meta;
+            return MetadataId::DEFAULT;
         };
         match self.heap.get(*obj_id) {
             HeapData::List(list) => {
                 let index = match key {
                     Value::Int(i) => *i,
                     Value::Bool(b) => i64::from(*b),
-                    _ => return fallback_meta,
+                    _ => return MetadataId::DEFAULT,
                 };
-                normalize_and_lookup_meta(index, list.len(), |i| list.item_meta(i), fallback_meta)
+                normalize_and_lookup_meta(index, list.len(), |i| list.item_meta(i))
             }
             HeapData::Tuple(tuple) => {
                 let index = match key {
                     Value::Int(i) => *i,
                     Value::Bool(b) => i64::from(*b),
-                    _ => return fallback_meta,
+                    _ => return MetadataId::DEFAULT,
                 };
                 let len = tuple.as_slice().len();
-                normalize_and_lookup_meta(index, len, |i| tuple.item_meta(i), fallback_meta)
+                normalize_and_lookup_meta(index, len, |i| tuple.item_meta(i))
             }
             HeapData::Dict(dict) => dict
                 .value_meta_for_key(key, self.heap, self.interns)
-                .unwrap_or(fallback_meta),
-            _ => fallback_meta,
+                .unwrap_or(MetadataId::DEFAULT),
+            _ => MetadataId::DEFAULT,
         }
     }
 }
 
-/// Normalizes a Python-style index and looks up metadata at the resolved position.
+/// Normalizes a Python-style index and looks up per-element metadata at the resolved position.
 ///
-/// Returns `fallback` if the index is out of bounds after normalization.
-fn normalize_and_lookup_meta(
-    index: i64,
-    len: usize,
-    lookup: impl FnOnce(usize) -> MetadataId,
-    fallback: MetadataId,
-) -> MetadataId {
+/// Returns `MetadataId::DEFAULT` if the index is out of bounds after normalization.
+fn normalize_and_lookup_meta(index: i64, len: usize, lookup: impl FnOnce(usize) -> MetadataId) -> MetadataId {
     let Some(len_i64) = i64::try_from(len).ok() else {
-        return fallback;
+        return MetadataId::DEFAULT;
     };
     let norm = if index < 0 { index + len_i64 } else { index };
     let Some(norm_usize) = usize::try_from(norm).ok() else {
-        return fallback;
+        return MetadataId::DEFAULT;
     };
-    if norm_usize < len { lookup(norm_usize) } else { fallback }
+    if norm_usize < len {
+        lookup(norm_usize)
+    } else {
+        MetadataId::DEFAULT
+    }
 }
 
 // `heap` is not a public field on VM, so this implementation needs to go here rather than in `heap.rs`

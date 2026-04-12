@@ -685,7 +685,7 @@ impl Set {
     /// This is a convenience method used by helper methods that need to convert
     /// arbitrary iterables to sets. It uses `MontyIter` internally.
     fn from_iterable(iterable: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
-        let iter = MontyIter::new(iterable, vm)?;
+        let iter = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?;
         let set = Self::from_iterator(iter, vm)?;
         Ok(set)
     }

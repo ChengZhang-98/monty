@@ -6,6 +6,7 @@ use crate::{
     defer_drop_mut,
     exception_private::RunResult,
     heap::HeapData,
+    metadata::MetadataId,
     resource::ResourceTracker,
     types::{List, MontyIter, allocate_tuple, tuple::TupleVec},
     value::Value,
@@ -32,7 +33,7 @@ pub fn builtin_zip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
     // Create iterators for each iterable
     let mut iterators: Vec<MontyIter> = Vec::with_capacity(positional.len());
     for iterable in positional {
-        match MontyIter::new(iterable, vm) {
+        match MontyIter::new(iterable, vm, MetadataId::DEFAULT) {
             Ok(iter) => iterators.push(iter),
             Err(e) => {
                 // Clean up already-created iterators

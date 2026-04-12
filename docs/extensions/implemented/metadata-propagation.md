@@ -57,10 +57,34 @@ type, and `LabelSet { is_universal: true }` internally. Its algebra:
 - `union(universal, s) = universal`
 - `intersection(universal, s) = s`
 
-### Element-level container tracking
+### Two-level container metadata
 
-Containers (list, dict, tuple, set) track metadata **per element**, not
-aggregated at the container level. This avoids false tainting:
+Containers track metadata at **two levels**:
+
+1. **Container-level metadata** — on the container variable itself (on the
+   operand stack). This is the metadata from the container's creation context,
+   e.g. metadata attached via `AnnotatedValue` when an external function returns
+   a list.
+2. **Per-element metadata** — stored alongside each element inside the
+   container's internal data structure (e.g. `List.item_metadata`,
+   `Dict.DictEntry.value_meta`).
+
+When extracting an element (indexing or iteration), the result's metadata is
+the **merge** of both levels:
+
+```python
+# External function returns a list with container-level metadata
+results = web_search("query")
+# results has tags={"__non_executable"} from AnnotatedValue
+# results[0] has per-element metadata = DEFAULT (elements from host)
+
+x = results[0]
+# x.metadata.tags == {"__non_executable"}
+# merge(container_meta, DEFAULT) = container_meta
+```
+
+Per-element metadata prevents false tainting when elements are built inside
+the sandbox with independent provenance:
 
 ```python
 secret = get_secret()   # producers={"vault"}, consumers={"admin"}
@@ -70,15 +94,11 @@ lst = [secret, public]
 x = lst[1]              # x gets public's metadata, NOT merged with secret's
 ```
 
-If containers aggregated metadata eagerly, `lst[1]` would inherit `secret`'s
-consumer restriction, falsely restricting access to public data.
+This works because `lst` has DEFAULT container-level metadata (built in-sandbox),
+so `merge(DEFAULT, element_meta) = element_meta`.
 
-> **Future consideration: hybrid tracking.** A container could carry its own
-> metadata (from the creation context) in addition to element-level metadata.
-> When extracting an element, the result would merge element metadata with
-> container metadata. This would be useful for coarse-grained queries like
-> "does this list contain any restricted data?" without iterating elements.
-> Not implemented yet.
+When both levels carry non-default metadata, the standard merge rules apply:
+union for producers/tags, intersection for consumers.
 
 ### Explicit data flow only (for now)
 
@@ -320,7 +340,7 @@ Metadata now enters and exits the VM through the public API.
 |---------|--------|--------|
 | **CellValue metadata** | Done | `CellValue` now has `value` + `meta` fields. `LoadCell`/`StoreCell` propagate metadata through closure cells. Removed `#[repr(transparent)]` and `#[serde(transparent)]`. |
 | **Comprehensions** | Done | `ListAppend`, `SetAdd`, `DictSetItem` pass element metadata from the stack into containers during comprehension building. |
-| **BinarySubscr element-level** | Done | `resolve_subscr_meta()` looks up element metadata from List/Tuple (integer indexing) and Dict (key lookup via `value_meta_for_key()`). Falls back to container metadata for unsupported types. |
+| **BinarySubscr element-level** | Done | `resolve_subscr_meta()` merges container-level metadata with per-element metadata from List/Tuple (integer indexing) and Dict (key lookup via `value_meta_for_key()`). Uses `lookup_element_meta()` for the per-element lookup. |
 | **UnpackEx (star unpacking)** | Done | `a, *rest, b = lst` propagates per-element metadata. The `*rest` list carries each collected element's individual metadata. |
 | **Slice operations** | Done (Phase 3) | `get_slice_metadata()` mirrors slice indexing for metadata. |
 | **Copy** | Done (Phase 3) | `list.copy()` preserves element metadata. |
@@ -330,7 +350,7 @@ Metadata now enters and exits the VM through the public API.
 | **`list_to_tuple`** | Done | Preserves per-element metadata when converting via `allocate_tuple_with_metadata()`. |
 | **String unpacking** | Done | Characters inherit the string's metadata in `unpack_sequence`, `unpack_ex`, `list_extend`, `set_extend` (via `extract_items_with_meta()`). |
 | **Empty label validation** | Done | Python API rejects empty strings in producers/consumers/tags with `ValueError`. |
-| **ForIter element-level** | Deferred | Requires iterator protocol changes to yield metadata alongside values. |
+| **ForIter element-level** | Done | `MontyIter` now stores `container_meta` from `GET_ITER`. `advance()` returns `(Value, MetadataId)` — the merge of container-level and per-element metadata. `get_heap_item()` returns per-element metadata for List, Tuple, NamedTuple, Dict (keys/values views). `FOR_ITER` uses `push_with_meta()`. |
 | **Default arguments** | Deferred | When function parameters use defaults, the default's metadata would need to propagate. Requires changes to argument binding. |
 
 | File | Change |
@@ -338,10 +358,11 @@ Metadata now enters and exits the VM through the public API.
 | `crates/monty/src/heap_data.rs` | `CellValue` now a struct with `value` + `meta` fields |
 | `crates/monty/src/heap.rs` | Updated `cell.0` → `cell.value` references |
 | `crates/monty/src/object.rs` | Updated `cell.0` → `cell.value` reference |
-| `crates/monty/src/bytecode/vm/mod.rs` | `load_cell`/`store_cell` propagate metadata. `BinarySubscr` uses `resolve_subscr_meta()` (now also handles Dict keys). Added `normalize_and_lookup_meta()` helper. |
+| `crates/monty/src/bytecode/vm/mod.rs` | `load_cell`/`store_cell` propagate metadata. `BinarySubscr` uses `resolve_subscr_meta()` which merges container + element metadata via `lookup_element_meta()`. `GET_ITER` captures container metadata with `pop_with_meta()` and passes to `MontyIter::new()`. `FOR_ITER` uses `push_with_meta()` with merged metadata from `advance()`. |
 | `crates/monty/src/bytecode/vm/call.rs` | Updated `CellValue` construction with struct syntax. `extract_args_tuple_with_meta()` propagates `*args` element metadata via `pending_arg_metadata`. |
 | `crates/monty/src/bytecode/vm/collections.rs` | `list_append`/`set_add`/`dict_set_item` pass metadata. `unpack_ex`/`unpack_sequence` propagate per-element metadata (including string chars inheriting the string's metadata). `list_extend`/`set_extend` preserve element metadata via `extract_items_with_meta()`. `dict_merge`/`dict_update` preserve key/value metadata. `list_to_tuple` preserves element metadata. |
-| `crates/monty/src/types/dict.rs` | Added `value_meta_for_key()` for subscript metadata resolution without `&mut VM`. |
+| `crates/monty/src/types/iter.rs` | `MontyIter` now stores `container_meta: MetadataId`. `new()` accepts `container_meta`. `advance()` returns `(Value, MetadataId)` with merged container+element metadata. `get_heap_item()` returns per-element metadata for all container types. |
+| `crates/monty/src/types/dict.rs` | Added `value_meta_for_key()` for subscript metadata resolution without `&mut VM`. Removed `#[expect(dead_code)]` from `value_meta_at`/`key_meta_at` (now used by `get_heap_item()`). |
 | `crates/monty/src/types/list.rs` | Added `extend_with_meta()` for metadata-preserving list extension. |
 | `crates/monty-python/src/metadata.rs` | Added `validate_no_empty_strings()` — rejects empty strings in metadata labels. |
 
@@ -497,16 +518,12 @@ Tests cover:
 
 ## Future Considerations
 
-- **Hybrid container metadata**: container-level metadata aggregated from
-  elements for coarse-grained provenance queries
 - **Implicit flow tracking** (planned): program counter label for control-flow
   tainting — assignments inside `if`/`else`/`while` branches would inherit the
   condition's metadata
 - **Metadata-aware builtins**: `len()`, `type()`, `isinstance()` currently
   produce `DEFAULT` metadata; some could propagate (e.g. `str()` converting
   a value should carry the value's metadata)
-- **ForIter element-level metadata**: iterator `advance()` would need to
-  return `(Value, MetadataId)` for element-level tracking during `for` loops
 - **Default argument metadata**: function parameter defaults should propagate
   their metadata when the argument is not provided by the caller
 - **REPL sync output metadata**: `MontyRepl.feed_run` returns `MontyObject`
@@ -540,7 +557,7 @@ When you add or port code that **produces a new value** on the stack, ask:
    - **Constant/literal** (e.g. `LoadConst`, `LoadNone`) → push `MetadataId::DEFAULT`
    - **Derived from one operand** (e.g. unary op, type conversion) → propagate the operand's metadata
    - **Derived from two operands** (e.g. binary op, comparison) → `metadata_store.merge(lhs_meta, rhs_meta)`
-   - **From a container element** (e.g. subscript, iteration) → look up the element's metadata from the container
+   - **From a container element** (e.g. subscript, iteration) → merge the container's stack-level metadata with the element's per-element metadata
    - **From host/external** (e.g. external function return, input) → use the `ObjectMetadata` from the API boundary
    - **Structural/internal** (e.g. creating an iterator, building a class) → `MetadataId::DEFAULT`
 
@@ -628,7 +645,12 @@ trait level. The trait methods don't know about metadata — the VM dispatch cod
 handles it:
 
 - `LoadAttr`: captures `obj_meta` before the call, stamps it on the result after
-- `BinarySubscr`: calls `resolve_subscr_meta()` before `py_getitem`
+- `BinarySubscr`: calls `resolve_subscr_meta()` which merges container-level
+  metadata with per-element metadata (via `lookup_element_meta()`)
+- `GetIter`: captures container metadata with `pop_with_meta()` and stores it
+  in `MontyIter.container_meta`
+- `ForIter`: uses `push_with_meta()` with the merged result from `advance()`
+  (container-level + per-element metadata)
 - `StoreSubscr`: currently doesn't propagate metadata to the stored element
   (deferred)
 
