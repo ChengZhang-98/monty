@@ -13,7 +13,6 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::RunResult,
     heap::{HeapData, HeapGuard},
-    metadata::MetadataId,
     resource::ResourceTracker,
     types::{List, MontyIter, PyTrait},
     value::Value,
@@ -32,17 +31,19 @@ use crate::{
 /// filter(None, [0, 1, False, True, ''])   # [1, True]
 /// ```
 pub fn builtin_filter(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    // filter(function, iterable) — iterable metadata is at index 1
+    let container_meta = vm.pending_arg_metadata.get(1).copied().unwrap_or_default();
     let (function, iterable) = args.get_two_args("filter", vm.heap)?;
     defer_drop!(function, vm);
 
-    let iter = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?;
+    let iter = MontyIter::new(iterable, vm, container_meta)?;
     defer_drop_mut!(iter, vm);
 
     let out: Vec<Value> = Vec::new();
     let mut out_guard = HeapGuard::new(out, vm);
     let (out, vm) = out_guard.as_parts_mut();
 
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some((item, _meta)) = iter.for_next(vm)? {
         let mut item_guard = HeapGuard::new(item, vm);
         let (item, vm) = item_guard.as_parts_mut();
         let should_include = if let Value::None = function {

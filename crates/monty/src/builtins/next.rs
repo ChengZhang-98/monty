@@ -14,8 +14,13 @@ use crate::{
 ///   `StopIteration` when the iterator is exhausted.
 /// - `next(iterator, default)` - Returns the next item from the iterator, or
 ///   `default` if the iterator is exhausted.
+///
+/// Propagates element metadata from the iterator to the return value via
+/// `vm.pending_result_metadata`, so the dispatch code pushes it with the correct metadata.
 pub fn builtin_next(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let (iterator, default) = args.get_one_two_args("next", vm.heap)?;
     defer_drop!(iterator, vm);
-    iterator_next(iterator, default, vm)
+    let (value, meta) = iterator_next(iterator, default, vm)?;
+    vm.pending_result_metadata = meta;
+    Ok(value)
 }

@@ -644,6 +644,15 @@ pub struct VM<'h, 'a, T: ResourceTracker> {
     /// Only used for `KwargsValues::Inline` — `KwargsValues::Dict` carries its own
     /// per-entry metadata internally.
     pub(crate) pending_kwarg_metadata: Vec<MetadataId>,
+
+    /// Metadata for the return value of a builtin function call.
+    ///
+    /// Builtins that produce values with meaningful metadata (e.g. `next()` propagating
+    /// iterator element metadata, `sum()` propagating container metadata) set this field
+    /// before returning. The dispatch code in `CallBuiltinFunction` / `CallBuiltinType`
+    /// reads and resets this field, pushing the result with the specified metadata instead
+    /// of `MetadataId::DEFAULT`.
+    pub(crate) pending_result_metadata: MetadataId,
 }
 
 impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
@@ -674,6 +683,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             metadata_store: MetadataStore::new(),
             pending_arg_metadata: Vec::new(),
             pending_kwarg_metadata: Vec::new(),
+            pending_result_metadata: MetadataId::DEFAULT,
         }
     }
 
@@ -712,6 +722,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             metadata_store,
             pending_arg_metadata: Vec::new(),
             pending_kwarg_metadata: Vec::new(),
+            pending_result_metadata: MetadataId::DEFAULT,
         }
     }
 
@@ -788,6 +799,7 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
             metadata_store: snapshot.metadata_store,
             pending_arg_metadata: Vec::new(),
             pending_kwarg_metadata: Vec::new(),
+            pending_result_metadata: MetadataId::DEFAULT,
         }
     }
 
@@ -1428,7 +1440,10 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                     self.current_frame_mut().ip = cached_frame.ip;
 
                     match self.exec_call_builtin_function(builtin_id, arg_count) {
-                        Ok(result) => self.push(result),
+                        Ok(result) => {
+                            let meta = mem::replace(&mut self.pending_result_metadata, MetadataId::DEFAULT);
+                            self.push_with_meta(result, meta);
+                        }
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }
                 }
@@ -1438,7 +1453,10 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                     let arg_count = fetch_u8!(cached_frame) as usize;
 
                     match self.exec_call_builtin_type(type_id, arg_count) {
-                        Ok(result) => self.push(result),
+                        Ok(result) => {
+                            let meta = mem::replace(&mut self.pending_result_metadata, MetadataId::DEFAULT);
+                            self.push_with_meta(result, meta);
+                        }
                         // IP sync deferred to error path (no frame push possible)
                         Err(err) => catch_sync!(self, cached_frame, err),
                     }

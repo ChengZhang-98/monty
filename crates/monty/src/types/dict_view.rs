@@ -572,8 +572,8 @@ pub(crate) fn collect_iterable_to_set(
     {
         let mut set_guard = HeapGuard::new(Set::new(), vm);
         let (set, vm) = set_guard.as_parts_mut();
-        while let Some((item, _meta)) = iter.advance(vm)? {
-            set.add(item, vm)?;
+        while let Some((item, meta)) = iter.advance(vm)? {
+            set.add_with_meta(item, meta, vm)?;
         }
         return Ok(set_guard.into_inner());
     }
@@ -583,8 +583,8 @@ pub(crate) fn collect_iterable_to_set(
     defer_drop_mut!(iter, vm);
     let mut set_guard = HeapGuard::new(Set::with_capacity(iter.size_hint(vm.heap)), vm);
     let (set, vm) = set_guard.as_parts_mut();
-    while let Some(item) = iter.for_next(vm)? {
-        set.add(item, vm)?;
+    while let Some((item, meta)) = iter.for_next(vm)? {
+        set.add_with_meta(item, meta, vm)?;
     }
     Ok(set_guard.into_inner())
 }

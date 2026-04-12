@@ -674,8 +674,8 @@ impl Set {
     fn from_iterator(iter: MontyIter, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
         defer_drop_mut!(iter, vm);
         let mut set = Self::with_capacity(iter.size_hint(vm.heap));
-        while let Some(item) = iter.for_next(vm)? {
-            set.add(item, vm)?;
+        while let Some((item, meta)) = iter.for_next(vm)? {
+            set.add_with_meta(item, meta, vm)?;
         }
         Ok(set)
     }

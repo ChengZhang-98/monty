@@ -257,6 +257,8 @@ Metadata flows automatically through these operations — no user action needed:
 | `{**d}`, `f(**kwargs)` | Keys and values preserve their per-entry metadata |
 | `lst[i]`, `d[key]` | `merge(container.meta, element.meta)` — container-level metadata is merged with per-element metadata |
 | `for x in lst` | Each `x` gets `merge(container.meta, element.meta)` |
+| `next(iter(lst))` | Result gets `merge(container.meta, element.meta)` |
+| `sum(lst)`, `min(lst)`, `max(lst)` | Result carries container metadata (merged across iterated elements for `sum`) |
 | `not x`, `-x` | Result carries `x`'s metadata |
 
 ### What does NOT propagate (yet)
@@ -388,6 +390,13 @@ producers, `UNIVERSAL` consumers, and empty tags.
 
 ## Limitations
 
+- **`d[key] = value` assignment**: `StoreSubscr` does not currently propagate
+  `value`'s metadata to the dict entry. Metadata on values set via subscript
+  assignment is lost.
+- **Method call metadata**: `obj.method()` does not propagate `obj`'s metadata
+  through the method call result. For example, `results.items()` produces a
+  view with DEFAULT metadata even if `results` has container metadata. Direct
+  iteration (`for x in results`) works correctly.
 - **MontyRepl sync output**: `MontyRepl.feed_run` returns a plain value (no
   `MontyComplete`), so output metadata is not directly accessible on the sync
   path. However, metadata is tracked internally and persists across snippets.

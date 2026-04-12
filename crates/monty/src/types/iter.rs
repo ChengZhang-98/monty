@@ -63,6 +63,7 @@ impl MontyIter {
     ///   already an iterator, returns the same object.
     /// - `iter(callable, sentinel)` - Not yet supported.
     pub fn init(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+        let container_meta = vm.pending_arg_metadata.first().copied().unwrap_or_default();
         let (iterable, sentinel) = args.get_one_two_args("iter", vm.heap)?;
 
         if let Some(s) = sentinel {
@@ -81,8 +82,8 @@ impl MontyIter {
             return Ok(iterable);
         }
 
-        // Create new iterator — called from builtin iter(), no stack-level metadata available
-        let iter = Self::new(iterable, vm, MetadataId::DEFAULT)?;
+        // Create new iterator with container metadata from the iterable argument
+        let iter = Self::new(iterable, vm, container_meta)?;
         let id = vm.heap.allocate(HeapData::Iter(iter))?;
         Ok(Value::Ref(id))
     }
@@ -149,17 +150,23 @@ impl MontyIter {
         &self.value
     }
 
-    /// Returns the next item from the iterator, advancing the internal index.
+    /// Returns the next item and its metadata from the iterator, advancing the internal index.
+    ///
+    /// The returned `MetadataId` is the **merged** result of the container-level metadata
+    /// (captured when the iterator was created) and the per-element metadata stored inside
+    /// the container. For non-heap types (Range, IterStr, InternBytes), per-element metadata
+    /// is always DEFAULT, so the result is just the container metadata.
     ///
     /// Returns `Ok(None)` when the iterator is exhausted.
     /// Returns `Err` if allocation fails (for string character iteration) or if
     /// a dict/set changes size during iteration (RuntimeError).
-    pub fn for_next(&mut self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<Value>> {
+    pub fn for_next(&mut self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Option<(Value, MetadataId)>> {
         // Check timeout on every iteration step. For NoLimitTracker this is
         // inlined as a no-op. For LimitTracker it ensures that Rust-side loops
         // (sum, sorted, min, max, etc.) cannot bypass the VM's per-instruction
         // timeout check by running entirely within a single bytecode instruction.
         vm.heap.check_time()?;
+        let container_meta = self.container_meta;
         match &mut self.iter_value {
             IterValue::Range { next, step, len } => {
                 if self.index >= *len {
@@ -168,7 +175,7 @@ impl MontyIter {
                 let value = *next;
                 *next += *step;
                 self.index += 1;
-                Ok(Some(Value::Int(value)))
+                Ok(Some((Value::Int(value), container_meta)))
             }
             IterValue::IterStr {
                 string,
@@ -185,7 +192,7 @@ impl MontyIter {
                         .expect("index < len implies char exists");
                     *byte_offset += c.len_utf8();
                     self.index += 1;
-                    Ok(Some(allocate_char(c, vm.heap)?))
+                    Ok(Some((allocate_char(c, vm.heap)?, container_meta)))
                 }
             }
             IterValue::InternBytes { bytes_id, len } => {
@@ -195,7 +202,7 @@ impl MontyIter {
                 let i = self.index;
                 self.index += 1;
                 let bytes = vm.interns.get_bytes(*bytes_id);
-                Ok(Some(Value::Int(i64::from(bytes[i]))))
+                Ok(Some((Value::Int(i64::from(bytes[i])), container_meta)))
             }
             IterValue::HeapRef {
                 heap_id,
@@ -210,11 +217,12 @@ impl MontyIter {
                 }
                 let i = self.index;
                 let expected_len = if *checks_mutation { *len } else { None };
-                let Some((item, _meta)) = get_heap_item(vm, *heap_id, i, expected_len)? else {
+                let Some((item, elem_meta)) = get_heap_item(vm, *heap_id, i, expected_len)? else {
                     return Ok(None);
                 };
                 self.index += 1;
-                Ok(Some(item))
+                let merged = vm.metadata_store.merge(container_meta, elem_meta);
+                Ok(Some((item, merged)))
             }
         }
     }
@@ -240,10 +248,11 @@ impl MontyIter {
         len.saturating_sub(self.index)
     }
 
-    /// Collects all remaining items from the iterator into a Vec.
+    /// Collects all remaining values from the iterator, discarding per-element metadata.
     ///
-    /// Consumes the iterator and returns all items. Used by `list()`, `tuple()`,
-    /// and similar constructors that need to materialize all items.
+    /// Consumes the iterator and returns all values. Used by `list()`, `tuple()`,
+    /// and similar constructors that need to materialize all items but don't track
+    /// per-element metadata (the container itself may carry container-level metadata).
     ///
     /// Pre-allocates capacity based on `size_hint()` for better performance.
     pub fn collect<T: FromIterator<Value>>(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<T> {
@@ -253,13 +262,20 @@ impl MontyIter {
     }
 }
 
+/// Wraps a `MontyIter` + `VM` pair as an `Iterator<Item = RunResult<Value>>`.
+///
+/// Used by `collect()` to materialize all iterator items into a Rust collection.
+/// Discards per-element metadata — use `for_next()` directly when metadata is needed.
 struct HeapedMontyIter<'this, 'a, 'p, T: ResourceTracker>(&'this mut MontyIter, &'this mut VM<'a, 'p, T>);
 
 impl<T: ResourceTracker> Iterator for HeapedMontyIter<'_, '_, '_, T> {
     type Item = RunResult<Value>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.0.for_next(self.1).transpose()
+        self.0
+            .for_next(self.1)
+            .map(|opt| opt.map(|(value, _meta)| value))
+            .transpose()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -415,10 +431,14 @@ fn get_heap_item(
                 return Err(ExcType::runtime_error_dict_changed_size());
             }
             let (key, value) = dict.item_at(index).expect("index should be valid");
-            // Items view yields (key, value) tuples; no per-element metadata on the tuple itself
+            let key_meta = dict.key_meta_at(index);
+            let value_meta = dict.value_meta_at(index);
+            // Items view yields (key, value) tuples with per-element metadata propagated
+            // to the tuple elements so key/value provenance survives iteration.
             Ok(Some((
-                super::allocate_tuple(
+                super::allocate_tuple_with_metadata(
                     smallvec::smallvec![key.clone_with_heap(vm), value.clone_with_heap(vm)],
+                    smallvec::smallvec![key_meta, value_meta],
                     vm.heap,
                 )?,
                 MetadataId::DEFAULT,
@@ -488,7 +508,7 @@ pub fn iterator_next(
     iter_value: &Value,
     default: Option<Value>,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
-) -> RunResult<Value> {
+) -> RunResult<(Value, MetadataId)> {
     let mut default_guard = HeapGuard::new(default, vm);
     let vm = default_guard.heap();
 
@@ -506,11 +526,11 @@ pub fn iterator_next(
 
     // Get next item using the MontyIter::advance method
     match result {
-        Some((item, _meta)) => Ok(item),
+        Some((item, meta)) => Ok((item, meta)),
         None => {
             // Iterator exhausted
             match default_guard.into_inner() {
-                Some(d) => Ok(d),
+                Some(d) => Ok((d, MetadataId::DEFAULT)),
                 None => Err(ExcType::stop_iteration()),
             }
         }

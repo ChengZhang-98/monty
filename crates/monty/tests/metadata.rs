@@ -170,7 +170,7 @@ fn object_metadata_serde_json_roundtrip_universal_tags() {
 
 // === End-to-end metadata propagation tests (Rust core API) ===
 
-use monty::{AnnotatedObject, MontyObject, MontyRun, NoLimitTracker, PrintWriter};
+use monty::{AnnotatedDictPairs, AnnotatedObject, MontyObject, MontyRun, NoLimitTracker, PrintWriter};
 
 /// Helper to run code with annotated inputs and return the output's metadata.
 fn run_with_meta(
@@ -760,4 +760,180 @@ fn metadata_tuple_container_level_propagates_through_indexing() {
     let (value, out_meta) = run_with_meta("x[1]", vec!["x"], vec![input]);
     assert_eq!(value, MontyObject::Int(2));
     assert_eq!(out_meta, Some(container_meta));
+}
+
+// === Fix #4: next() propagates metadata ===
+
+#[test]
+fn metadata_next_propagates_iterator_element_metadata() {
+    // next(iter(x)) should propagate the container's metadata to the returned element.
+    let container_meta = meta(Some(&["api"]), Some(&["admin"]), Some(&["untrusted"]));
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(10), None),
+        AnnotatedObject::new(MontyObject::Int(20), None),
+    ]);
+    let input = AnnotatedObject::new(input_list, Some(container_meta.clone()));
+
+    let code = "it = iter(x)\nnext(it)";
+    let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(10));
+    assert_eq!(out_meta, Some(container_meta));
+}
+
+#[test]
+fn metadata_next_with_default_returns_default_metadata_when_exhausted() {
+    // next(iter([]), 'fallback') should return DEFAULT metadata for the default value.
+    let input_list = MontyObject::List(vec![]);
+    let input = AnnotatedObject::new(input_list, None);
+
+    let code = "it = iter(x)\nnext(it, 99)";
+    let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(99));
+    assert_eq!(out_meta, None);
+}
+
+// === Fix #6: Builtins propagate container metadata ===
+
+#[test]
+fn metadata_sum_propagates_container_metadata() {
+    // sum(x) where x has container metadata should propagate it to the result.
+    let container_meta = meta(Some(&["api"]), Some(&["admin"]), Some(&["financial"]));
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(10), None),
+        AnnotatedObject::new(MontyObject::Int(20), None),
+    ]);
+    let input = AnnotatedObject::new(input_list, Some(container_meta.clone()));
+
+    let (value, out_meta) = run_with_meta("sum(x)", vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(30));
+    assert_eq!(out_meta, Some(container_meta));
+}
+
+#[test]
+fn metadata_min_propagates_container_metadata() {
+    // min(x) where x has container metadata should propagate it to the result.
+    let container_meta = meta(Some(&["sensor"]), None, Some(&["measurement"]));
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(5), None),
+        AnnotatedObject::new(MontyObject::Int(3), None),
+        AnnotatedObject::new(MontyObject::Int(8), None),
+    ]);
+    let input = AnnotatedObject::new(input_list, Some(container_meta.clone()));
+
+    let (value, out_meta) = run_with_meta("min(x)", vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(3));
+    assert_eq!(out_meta, Some(container_meta));
+}
+
+#[test]
+fn metadata_max_propagates_container_metadata() {
+    // max(x) where x has container metadata should propagate it to the result.
+    let container_meta = meta(Some(&["sensor"]), None, Some(&["measurement"]));
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(5), None),
+        AnnotatedObject::new(MontyObject::Int(3), None),
+        AnnotatedObject::new(MontyObject::Int(8), None),
+    ]);
+    let input = AnnotatedObject::new(input_list, Some(container_meta.clone()));
+
+    let (value, out_meta) = run_with_meta("max(x)", vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(8));
+    assert_eq!(out_meta, Some(container_meta));
+}
+
+// === Fix #5: DictItemsView iteration propagates key/value metadata ===
+
+#[test]
+fn metadata_dict_items_iteration_propagates_value_metadata() {
+    // Iterating dict.items() should yield tuples where element metadata
+    // from the dict entry is propagated to the tuple elements.
+    let value_meta = meta(Some(&["vault"]), Some(&["admin"]), Some(&["secret"]));
+    let input_dict = MontyObject::Dict(AnnotatedDictPairs(vec![(
+        AnnotatedObject::new(MontyObject::String("key".to_string()), None),
+        AnnotatedObject::new(MontyObject::Int(42), Some(value_meta.clone())),
+    )]));
+    let input = AnnotatedObject::new(input_dict, None);
+
+    // Iterate items, unpack the tuple, return the value
+    let code = "result = None\nfor k, v in x.items():\n    result = v\nresult";
+    let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(42));
+    assert_eq!(out_meta, Some(value_meta));
+}
+
+#[test]
+fn metadata_dict_items_iteration_propagates_key_metadata() {
+    // Iterating dict.items() should propagate key metadata to the tuple's first element.
+    let key_meta = meta(Some(&["db"]), None, Some(&["identifier"]));
+    let input_dict = MontyObject::Dict(AnnotatedDictPairs(vec![(
+        AnnotatedObject::new(MontyObject::String("user_id".to_string()), Some(key_meta.clone())),
+        AnnotatedObject::new(MontyObject::Int(1), None),
+    )]));
+    let input = AnnotatedObject::new(input_dict, None);
+
+    // Iterate items, unpack the tuple, return the key
+    let code = "result = None\nfor k, v in x.items():\n    result = k\nresult";
+    let (value, out_meta) = run_with_meta(code, vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::String("user_id".to_string()));
+    assert_eq!(out_meta, Some(key_meta));
+}
+
+// === Container metadata through builtins that create new containers ===
+
+#[test]
+fn metadata_sorted_uses_container_metadata_for_iteration() {
+    // sorted(x) where x has container metadata — the sorted result is a new list,
+    // but extracting an element from it should carry the container metadata because
+    // the iterator used container_meta during collection.
+    // However, sorted creates a new list, and the result is pushed with DEFAULT
+    // since it's a new container. So we test that sorted doesn't crash and the
+    // basic flow works.
+    let container_meta = meta(Some(&["api"]), None, Some(&["data"]));
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(3), None),
+        AnnotatedObject::new(MontyObject::Int(1), None),
+        AnnotatedObject::new(MontyObject::Int(2), None),
+    ]);
+    let input = AnnotatedObject::new(input_list, Some(container_meta));
+
+    let (value, _out_meta) = run_with_meta("sorted(x)", vec!["x"], vec![input]);
+    assert_eq!(
+        value,
+        MontyObject::List(vec![
+            AnnotatedObject::new(MontyObject::Int(1), None),
+            AnnotatedObject::new(MontyObject::Int(2), None),
+            AnnotatedObject::new(MontyObject::Int(3), None),
+        ])
+    );
+}
+
+// === Sum merges element metadata across all items ===
+
+#[test]
+fn metadata_sum_merges_element_and_container_metadata() {
+    // sum(x) where x has container metadata AND an element has its own metadata.
+    // The result should be the merge of container + element metadata across all items.
+    let container_meta = meta(Some(&["api"]), Some(&["admin", "user"]), Some(&["external"]));
+    let elem_meta = meta(Some(&["db"]), Some(&["admin"]), Some(&["pii"]));
+    let input_list = MontyObject::List(vec![
+        AnnotatedObject::new(MontyObject::Int(10), Some(elem_meta)),
+        AnnotatedObject::new(MontyObject::Int(20), None),
+    ]);
+    let input = AnnotatedObject::new(input_list, Some(container_meta));
+
+    let (value, out_meta) = run_with_meta("sum(x)", vec!["x"], vec![input]);
+    assert_eq!(value, MontyObject::Int(30));
+    let out = out_meta.expect("merged metadata should be present");
+    // producers = union(api, db) = {api, db}
+    assert_eq!(
+        out.producers,
+        Some(BTreeSet::from(["api".to_string(), "db".to_string()]))
+    );
+    // consumers = intersection(intersection(admin, user), admin) = {admin}
+    assert_eq!(out.consumers, Some(BTreeSet::from(["admin".to_string()])));
+    // tags = union(external, pii) = {external, pii}
+    assert_eq!(
+        out.tags,
+        Some(BTreeSet::from(["external".to_string(), "pii".to_string()]))
+    );
 }

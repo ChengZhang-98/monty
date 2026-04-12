@@ -2064,7 +2064,7 @@ fn bytes_join<'h>(
     let mut result = Vec::new();
     let mut index = 0usize;
 
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some((item, _meta)) = iter.for_next(vm)? {
         defer_drop!(item, vm);
 
         if index > 0 {

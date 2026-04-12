@@ -351,6 +351,12 @@ Metadata now enters and exits the VM through the public API.
 | **String unpacking** | Done | Characters inherit the string's metadata in `unpack_sequence`, `unpack_ex`, `list_extend`, `set_extend` (via `extract_items_with_meta()`). |
 | **Empty label validation** | Done | Python API rejects empty strings in producers/consumers/tags with `ValueError`. |
 | **ForIter element-level** | Done | `MontyIter` now stores `container_meta` from `GET_ITER`. `advance()` returns `(Value, MetadataId)` — the merge of container-level and per-element metadata. `get_heap_item()` returns per-element metadata for List, Tuple, NamedTuple, Dict (keys/values views). `FOR_ITER` uses `push_with_meta()`. |
+| **`for_next()` metadata** | Done | `MontyIter::for_next()` now returns `(Value, MetadataId)` — merged container + per-element metadata, consistent with `advance()` on `HeapRead<MontyIter>`. All Rust-side iteration (builtins, `collect()`, set/dict construction) has access to element metadata. |
+| **`next()` builtin metadata** | Done | `iterator_next()` returns `(Value, MetadataId)`. `builtin_next` sets `vm.pending_result_metadata` so the dispatch code pushes the result with the correct metadata. |
+| **`pending_result_metadata`** | Done | New `MetadataId` field on VM. `CallBuiltinFunction` and `CallBuiltinType` dispatch reads and resets this field, using `push_with_meta()` instead of `push()`. Allows any builtin to propagate metadata to its return value. |
+| **Builtin container metadata** | Done | All iteration-creating builtins (`all`, `any`, `sum`, `min`, `max`, `enumerate`, `filter`, `map`, `reversed`, `sorted`, `zip`) now read container metadata from `vm.pending_arg_metadata` and pass it to `MontyIter::new()`. `iter()` type constructor also captures metadata. Scalar-producing builtins (`sum`, `min`, `max`) set `pending_result_metadata`. |
+| **`DictItemsView` element metadata** | Done | `get_heap_item()` DictItemsView arm now uses `allocate_tuple_with_metadata()` with `key_meta_at()`/`value_meta_at()`, propagating per-entry metadata to tuple elements. |
+| **`collect_iterable_to_set` metadata** | Done | Both paths (fast-path via `advance()` and `for_next()` path) now use `set.add_with_meta()` to preserve per-element metadata. `Set::from_iterator()` also preserves metadata. |
 | **Default arguments** | Deferred | When function parameters use defaults, the default's metadata would need to propagate. Requires changes to argument binding. |
 
 | File | Change |
@@ -358,11 +364,14 @@ Metadata now enters and exits the VM through the public API.
 | `crates/monty/src/heap_data.rs` | `CellValue` now a struct with `value` + `meta` fields |
 | `crates/monty/src/heap.rs` | Updated `cell.0` → `cell.value` references |
 | `crates/monty/src/object.rs` | Updated `cell.0` → `cell.value` reference |
-| `crates/monty/src/bytecode/vm/mod.rs` | `load_cell`/`store_cell` propagate metadata. `BinarySubscr` uses `resolve_subscr_meta()` which merges container + element metadata via `lookup_element_meta()`. `GET_ITER` captures container metadata with `pop_with_meta()` and passes to `MontyIter::new()`. `FOR_ITER` uses `push_with_meta()` with merged metadata from `advance()`. |
+| `crates/monty/src/bytecode/vm/mod.rs` | `load_cell`/`store_cell` propagate metadata. `BinarySubscr` uses `resolve_subscr_meta()` which merges container + element metadata via `lookup_element_meta()`. `GET_ITER` captures container metadata with `pop_with_meta()` and passes to `MontyIter::new()`. `FOR_ITER` uses `push_with_meta()` with merged metadata from `advance()`. Added `pending_result_metadata: MetadataId` field. `CallBuiltinFunction`/`CallBuiltinType` dispatch uses `push_with_meta(result, pending_result_metadata)`. |
 | `crates/monty/src/bytecode/vm/call.rs` | Updated `CellValue` construction with struct syntax. `extract_args_tuple_with_meta()` propagates `*args` element metadata via `pending_arg_metadata`. |
 | `crates/monty/src/bytecode/vm/collections.rs` | `list_append`/`set_add`/`dict_set_item` pass metadata. `unpack_ex`/`unpack_sequence` propagate per-element metadata (including string chars inheriting the string's metadata). `list_extend`/`set_extend` preserve element metadata via `extract_items_with_meta()`. `dict_merge`/`dict_update` preserve key/value metadata. `list_to_tuple` preserves element metadata. |
-| `crates/monty/src/types/iter.rs` | `MontyIter` now stores `container_meta: MetadataId`. `new()` accepts `container_meta`. `advance()` returns `(Value, MetadataId)` with merged container+element metadata. `get_heap_item()` returns per-element metadata for all container types. |
+| `crates/monty/src/types/iter.rs` | `MontyIter` now stores `container_meta: MetadataId`. `new()` accepts `container_meta`. `advance()` and `for_next()` both return `(Value, MetadataId)` with merged container+element metadata. `get_heap_item()` returns per-element metadata for all container types. `DictItemsView` uses `allocate_tuple_with_metadata()` for key/value metadata. `iterator_next()` returns `(Value, MetadataId)`. `init()` (iter constructor) captures metadata from `pending_arg_metadata`. |
 | `crates/monty/src/types/dict.rs` | Added `value_meta_for_key()` for subscript metadata resolution without `&mut VM`. Removed `#[expect(dead_code)]` from `value_meta_at`/`key_meta_at` (now used by `get_heap_item()`). |
+| `crates/monty/src/types/dict_view.rs` | `collect_iterable_to_set()` now uses `add_with_meta()` to preserve per-element metadata in both fast-path and `for_next()` paths. |
+| `crates/monty/src/types/set.rs` | `Set::from_iterator()` now uses `add_with_meta()` to preserve per-element metadata. |
+| `crates/monty/src/builtins/*.rs` | All iteration-creating builtins (`all`, `any`, `sum`, `min`/`max`, `enumerate`, `filter`, `map`, `reversed`, `sorted`, `zip`) read container metadata from `vm.pending_arg_metadata` and pass it to `MontyIter::new()`. `sum`, `min`, `max` set `pending_result_metadata`. `next` propagates via `pending_result_metadata`. |
 | `crates/monty/src/types/list.rs` | Added `extend_with_meta()` for metadata-preserving list extension. |
 | `crates/monty-python/src/metadata.rs` | Added `validate_no_empty_strings()` — rejects empty strings in metadata labels. |
 
@@ -521,9 +530,16 @@ Tests cover:
 - **Implicit flow tracking** (planned): program counter label for control-flow
   tainting — assignments inside `if`/`else`/`while` branches would inherit the
   condition's metadata
-- **Metadata-aware builtins**: `len()`, `type()`, `isinstance()` currently
-  produce `DEFAULT` metadata; some could propagate (e.g. `str()` converting
-  a value should carry the value's metadata)
+- **`StoreSubscr` metadata propagation**: `d[key] = value` does not currently
+  propagate `value`'s metadata to the dict entry. This would require changes
+  to the `StoreSubscr` opcode handler.
+- **Method call metadata propagation**: `obj.method()` does not propagate
+  `obj`'s metadata through the method call result. For example,
+  `results.items()` produces a DictItemsView with DEFAULT metadata even if
+  `results` has container metadata.
+- **Metadata-aware type conversions**: `str()`, `repr()`, `int()`, `float()`
+  currently produce `DEFAULT` metadata; they should propagate the operand's
+  metadata since they are data conversions.
 - **Default argument metadata**: function parameter defaults should propagate
   their metadata when the argument is not provided by the caller
 - **REPL sync output metadata**: `MontyRepl.feed_run` returns `MontyObject`
@@ -622,20 +638,29 @@ If upstream adds a new container type (e.g. `OrderedDict`, `deque`):
 
 #### New builtin function
 
-Most builtins produce values with `DEFAULT` metadata, which is correct — the
-result of `len(x)` doesn't carry `x`'s provenance. But builtins that
-**transform** data should propagate:
+Builtins that consume iterables now read `vm.pending_arg_metadata` to capture
+the iterable's container metadata and pass it to `MontyIter::new()`. Builtins
+that produce scalar results (`sum`, `min`, `max`, `next`) set
+`vm.pending_result_metadata` so the dispatch code pushes the result with the
+correct metadata. The dispatch code for `CallBuiltinFunction`/`CallBuiltinType`
+reads and resets `pending_result_metadata`, using `push_with_meta()`.
 
 | Builtin | Metadata behavior |
 |---------|-------------------|
 | `len()`, `type()`, `isinstance()`, `id()` | `DEFAULT` (informational, not data-derived) |
 | `str()`, `repr()`, `int()`, `float()` | Propagate operand's metadata (data conversion) |
-| `sorted()`, `reversed()` | Each element keeps its own metadata |
+| `sum()`, `min()`, `max()` | Propagate container metadata via `pending_result_metadata`; `sum` also merges per-element metadata across items |
+| `next()` | Propagates element metadata from iterator via `pending_result_metadata` |
+| `sorted()`, `reversed()` | Create new containers; container metadata passed to `MontyIter::new()` for iteration |
 | `list()`, `tuple()`, `set()`, `dict()` | Constructor — elements keep their metadata |
-| `map()`, `filter()` | Elements propagate through the function |
+| `all()`, `any()` | Iterate with container metadata; return `bool` with `DEFAULT` |
+| `enumerate()`, `filter()`, `map()`, `zip()` | Iterate with container metadata; produce new containers |
+| `iter()` | Captures container metadata from `pending_arg_metadata` into `MontyIter.container_meta` |
 
-Currently, most builtins use `push()` (which defaults to `DEFAULT`). To
-propagate, change to `push_with_meta()` with the input's metadata.
+To add metadata propagation to a new builtin:
+1. Capture metadata early: `let meta = vm.pending_arg_metadata.first().copied().unwrap_or_default();`
+2. Pass it to `MontyIter::new(iterable, vm, meta)` if iterating
+3. Set `vm.pending_result_metadata = meta;` before returning if the result should carry metadata
 
 #### New trait method (e.g. `py_getattr` changes)
 
