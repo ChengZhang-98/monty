@@ -18,8 +18,9 @@ use crate::{
 /// Returns a list of (index, value) tuples.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 pub fn builtin_enumerate(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let container_meta = vm.pending_arg_metadata.first().copied().unwrap_or_default();
     let (iterable, start) = args.get_one_two_args("enumerate", vm.heap)?;
-    let iter = MontyIter::new(iterable, vm)?;
+    let iter = MontyIter::new(iterable, vm, container_meta)?;
     defer_drop_mut!(iter, vm);
     defer_drop!(start, vm);
 
@@ -40,7 +41,7 @@ pub fn builtin_enumerate(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgVal
 
     let mut result: Vec<Value> = Vec::new();
 
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some((item, _meta)) = iter.for_next(vm)? {
         // Create tuple (index, item)
         let tuple_val = allocate_tuple(smallvec![Value::Int(index), item], vm.heap)?;
         result.push(tuple_val);

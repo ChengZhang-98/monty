@@ -6,6 +6,7 @@ use crate::{
     defer_drop_mut,
     exception_private::RunResult,
     heap::HeapData,
+    metadata::MetadataId,
     resource::ResourceTracker,
     types::{List, MontyIter, allocate_tuple, tuple::TupleVec},
     value::Value,
@@ -17,6 +18,8 @@ use crate::{
 /// from each of the argument iterables. Stops when the shortest iterable is exhausted.
 /// Note: In Python this returns an iterator, but we return a list for simplicity.
 pub fn builtin_zip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    // zip(*iterables) — each positional arg is an iterable
+    let arg_meta: Vec<MetadataId> = vm.pending_arg_metadata.clone();
     let (positional, kwargs) = args.into_parts();
     defer_drop_mut!(positional, vm);
 
@@ -31,8 +34,9 @@ pub fn builtin_zip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
 
     // Create iterators for each iterable
     let mut iterators: Vec<MontyIter> = Vec::with_capacity(positional.len());
-    for iterable in positional {
-        match MontyIter::new(iterable, vm) {
+    for (i, iterable) in positional.enumerate() {
+        let meta = arg_meta.get(i).copied().unwrap_or_default();
+        match MontyIter::new(iterable, vm, meta) {
             Ok(iter) => iterators.push(iter),
             Err(e) => {
                 // Clean up already-created iterators
@@ -51,7 +55,7 @@ pub fn builtin_zip(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
         let mut tuple_items = TupleVec::with_capacity(iterators.len());
 
         for iter in &mut iterators {
-            if let Some(item) = iter.for_next(vm)? {
+            if let Some((item, _meta)) = iter.for_next(vm)? {
                 tuple_items.push(item);
             } else {
                 // This iterator is exhausted - drop partial tuple items and stop

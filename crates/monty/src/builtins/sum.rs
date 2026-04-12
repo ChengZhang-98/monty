@@ -8,6 +8,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapGuard,
+    metadata::MetadataId,
     resource::ResourceTracker,
     types::{MontyIter, PyTrait, Type},
     value::Value,
@@ -19,10 +20,11 @@ use crate::{
 /// The default start value is 0. String start values are explicitly rejected
 /// (use `''.join(seq)` instead for string concatenation).
 pub fn builtin_sum(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let container_meta = vm.pending_arg_metadata.first().copied().unwrap_or_default();
     let (iterable, start) = args.get_one_two_args("sum", vm.heap)?;
     defer_drop_mut!(start, vm);
 
-    let iter = MontyIter::new(iterable, vm)?;
+    let iter = MontyIter::new(iterable, vm, container_meta)?;
     defer_drop_mut!(iter, vm);
 
     // Get the start value, defaulting to 0
@@ -47,9 +49,13 @@ pub fn builtin_sum(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
     let mut acc_guard = HeapGuard::new(accumulator, vm);
     let (accumulator, vm) = acc_guard.as_parts_mut();
 
+    // Track metadata from iterated elements — merged across all items
+    let mut result_meta = MetadataId::DEFAULT;
+
     // Sum all items
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some((item, item_meta)) = iter.for_next(vm)? {
         defer_drop!(item, vm);
+        result_meta = vm.metadata_store.merge(result_meta, item_meta);
 
         // Try to add the item to accumulator
         if let Some(new_value) = accumulator.py_add(item, vm)? {
@@ -64,5 +70,6 @@ pub fn builtin_sum(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
         }
     }
 
+    vm.pending_result_metadata = result_meta;
     Ok(acc_guard.into_inner())
 }

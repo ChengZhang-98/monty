@@ -10,6 +10,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult},
     heap::{Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, HeapReadOutput},
     intern::StaticStrings,
+    metadata::MetadataId,
     resource::{ResourceError, ResourceTracker},
     types::{Dict, FrozenSet, MontyIter, PyTrait, Set, Type, allocate_tuple},
     value::{EitherStr, Value},
@@ -571,19 +572,19 @@ pub(crate) fn collect_iterable_to_set(
     {
         let mut set_guard = HeapGuard::new(Set::new(), vm);
         let (set, vm) = set_guard.as_parts_mut();
-        while let Some(item) = iter.advance(vm)? {
-            set.add(item, vm)?;
+        while let Some((item, meta)) = iter.advance(vm)? {
+            set.add_with_meta(item, meta, vm)?;
         }
         return Ok(set_guard.into_inner());
     }
 
     let (value, vm) = value_guard.into_parts();
-    let iter = MontyIter::new(value, vm)?;
+    let iter = MontyIter::new(value, vm, MetadataId::DEFAULT)?;
     defer_drop_mut!(iter, vm);
     let mut set_guard = HeapGuard::new(Set::with_capacity(iter.size_hint(vm.heap)), vm);
     let (set, vm) = set_guard.as_parts_mut();
-    while let Some(item) = iter.for_next(vm)? {
-        set.add(item, vm)?;
+    while let Some((item, meta)) = iter.for_next(vm)? {
+        set.add_with_meta(item, meta, vm)?;
     }
     Ok(set_guard.into_inner())
 }

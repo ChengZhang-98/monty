@@ -78,6 +78,7 @@ use crate::{
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
+    metadata::MetadataId,
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
     types::List,
     value::{EitherStr, Value},
@@ -2055,7 +2056,7 @@ fn bytes_join<'h>(
     iterable: Value,
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
-    let Ok(iter) = MontyIter::new(iterable, vm) else {
+    let Ok(iter) = MontyIter::new(iterable, vm, MetadataId::DEFAULT) else {
         return Err(ExcType::type_error_join_not_iterable());
     };
     defer_drop_mut!(iter, vm);
@@ -2063,7 +2064,7 @@ fn bytes_join<'h>(
     let mut result = Vec::new();
     let mut index = 0usize;
 
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some((item, _meta)) = iter.for_next(vm)? {
         defer_drop!(item, vm);
 
         if index > 0 {

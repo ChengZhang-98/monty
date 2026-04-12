@@ -530,13 +530,11 @@ impl Dict {
     }
 
     /// Returns the metadata for the value at the given index.
-    #[expect(dead_code)]
     pub fn value_meta_at(&self, index: usize) -> MetadataId {
         self.entries[index].value_meta
     }
 
     /// Returns the metadata for the key at the given index.
-    #[expect(dead_code)]
     pub fn key_meta_at(&self, index: usize) -> MetadataId {
         self.entries[index].key_meta
     }
@@ -669,28 +667,28 @@ impl<'h> HeapRead<'h, Dict> {
         iterable: Value,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> RunResult<()> {
-        let iter = MontyIter::new(iterable, vm)?;
+        let iter = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?;
         defer_drop_mut!(iter, vm);
 
-        while let Some(item) = iter.for_next(vm)? {
-            let pair_iter = MontyIter::new(item, vm)?;
+        while let Some((item, _meta)) = iter.for_next(vm)? {
+            let pair_iter = MontyIter::new(item, vm, MetadataId::DEFAULT)?;
             defer_drop_mut!(pair_iter, vm);
 
-            let Some(key) = pair_iter.for_next(vm)? else {
+            let Some((key, _key_meta)) = pair_iter.for_next(vm)? else {
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length 0; 2 is required",
                 ));
             };
             let mut key_guard = HeapGuard::new(key, vm);
 
-            let Some(value) = pair_iter.for_next(key_guard.heap())? else {
+            let Some((value, _val_meta)) = pair_iter.for_next(key_guard.heap())? else {
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length 1; 2 is required",
                 ));
             };
             let mut value_guard = HeapGuard::new(value, key_guard.heap());
 
-            if let Some(extra) = pair_iter.for_next(value_guard.heap())? {
+            if let Some((extra, _extra_meta)) = pair_iter.for_next(value_guard.heap())? {
                 extra.drop_with_heap(value_guard.heap());
                 return Err(ExcType::type_error(
                     "dictionary update sequence element has length > 2; 2 is required",
@@ -1152,29 +1150,29 @@ fn dict_merge_from_iterable_pairs(
     iterable: Value,
     vm: &mut VM<'_, '_, impl ResourceTracker>,
 ) -> RunResult<()> {
-    let iter = MontyIter::new(iterable, vm)?;
+    let iter = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?;
     defer_drop_mut!(iter, vm);
 
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some((item, _meta)) = iter.for_next(vm)? {
         // Each item should be a pair (iterable of 2 elements).
-        let pair_iter = MontyIter::new(item, vm)?;
+        let pair_iter = MontyIter::new(item, vm, MetadataId::DEFAULT)?;
         defer_drop_mut!(pair_iter, vm);
 
-        let Some(key) = pair_iter.for_next(vm)? else {
+        let Some((key, _key_meta)) = pair_iter.for_next(vm)? else {
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length 0; 2 is required",
             ));
         };
         let mut key_guard = HeapGuard::new(key, vm);
 
-        let Some(value) = pair_iter.for_next(key_guard.heap())? else {
+        let Some((value, _val_meta)) = pair_iter.for_next(key_guard.heap())? else {
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length 1; 2 is required",
             ));
         };
         let mut value_guard = HeapGuard::new(value, key_guard.heap());
 
-        if let Some(extra) = pair_iter.for_next(value_guard.heap())? {
+        if let Some((extra, _extra_meta)) = pair_iter.for_next(value_guard.heap())? {
             extra.drop_with_heap(value_guard.heap());
             return Err(ExcType::type_error(
                 "dictionary update sequence element has length > 2; 2 is required",
@@ -1314,7 +1312,7 @@ pub fn dict_fromkeys(args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>)
     let default = default.unwrap_or(Value::None);
     defer_drop!(default, vm);
 
-    let iter = MontyIter::new(iterable, vm)?;
+    let iter = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?;
     defer_drop_mut!(iter, vm);
 
     let dict = Dict::new();
@@ -1323,7 +1321,7 @@ pub fn dict_fromkeys(args: ArgValues, vm: &mut VM<'_, '_, impl ResourceTracker>)
     {
         let (dict, vm) = dict_guard.as_parts_mut();
 
-        while let Some(key) = iter.for_next(vm)? {
+        while let Some((key, _meta)) = iter.for_next(vm)? {
             let old_value = dict.set(key, default.clone_with_heap(vm), vm)?;
             old_value.drop_with_heap(vm);
         }

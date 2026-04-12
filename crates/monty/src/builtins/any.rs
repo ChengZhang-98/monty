@@ -15,11 +15,12 @@ use crate::{
 /// Returns True if any element of the iterable is true.
 /// Returns False for an empty iterable. Short-circuits on the first truthy value.
 pub fn builtin_any(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    let container_meta = vm.pending_arg_metadata.first().copied().unwrap_or_default();
     let iterable = args.get_one_arg("any", vm.heap)?;
-    let iter = MontyIter::new(iterable, vm)?;
+    let iter = MontyIter::new(iterable, vm, container_meta)?;
     defer_drop_mut!(iter, vm);
 
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some((item, _meta)) = iter.for_next(vm)? {
         defer_drop!(item, vm);
         if item.py_bool(vm) {
             return Ok(Value::Bool(true));

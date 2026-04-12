@@ -44,6 +44,8 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
     } else {
         "max() key argument"
     };
+    // min/max(iterable) or min/max(arg1, arg2, ...) — first arg metadata at index 0
+    let container_meta = vm.pending_arg_metadata.first().copied().unwrap_or_default();
     let (positional, kwargs) = args.into_parts();
     defer_drop_mut!(positional, vm);
 
@@ -66,10 +68,10 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
     // decide what to do based on remaining arguments
     if positional.len() == 0 {
         // Single argument: iterate over it
-        let iter = MontyIter::new(first_arg, vm)?;
+        let iter = MontyIter::new(first_arg, vm, container_meta)?;
         defer_drop_mut!(iter, vm);
 
-        let Some(result) = iter.for_next(vm)? else {
+        let Some((result, result_meta)) = iter.for_next(vm)? else {
             if let Some(default) = default_value.take() {
                 return Ok(default);
             }
@@ -89,7 +91,7 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
                 {
                     let (result_key, vm) = result_key_guard.as_parts_mut();
 
-                    while let Some(item) = iter.for_next(vm)? {
+                    while let Some((item, _meta)) = iter.for_next(vm)? {
                         defer_drop_mut!(item, vm);
                         let item_key = evaluate_key(item.clone_with_heap(vm), key_fn, key_context, vm)?;
                         defer_drop_mut!(item_key, vm);
@@ -104,20 +106,26 @@ fn builtin_min_max(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues, i
                 let result_key = result_key_guard.into_inner();
                 result_key.drop_with_heap(vm);
             }
-            Ok(result_guard.into_inner())
+            let (result, vm) = result_guard.into_parts();
+            vm.pending_result_metadata = result_meta;
+            Ok(result)
         } else {
             let mut result_guard = HeapGuard::new(result, vm);
-            let (result, vm) = result_guard.as_parts_mut();
+            {
+                let (result, vm) = result_guard.as_parts_mut();
 
-            while let Some(item) = iter.for_next(vm)? {
-                defer_drop_mut!(item, vm);
+                while let Some((item, _meta)) = iter.for_next(vm)? {
+                    defer_drop_mut!(item, vm);
 
-                if candidate_wins(result, item, is_min, vm)? {
-                    mem::swap(result, item);
+                    if candidate_wins(result, item, is_min, vm)? {
+                        mem::swap(result, item);
+                    }
                 }
             }
 
-            Ok(result_guard.into_inner())
+            let (result, vm) = result_guard.into_parts();
+            vm.pending_result_metadata = result_meta;
+            Ok(result)
         }
     } else {
         // Multiple arguments: compare them directly

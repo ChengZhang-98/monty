@@ -489,3 +489,280 @@ def test_universal_producers_roundtrip_through_interpreter():
     assert snap.metadata is not None
     assert snap.metadata.producers is pydantic_monty.UNIVERSAL
     assert snap.metadata.consumers == snapshot(frozenset({'admin'}))
+
+
+# === Container-level metadata propagation through indexing ===
+
+
+def test_container_metadata_propagates_through_indexing():
+    """Indexing a list that has container-level metadata (from input) should
+    propagate the container's metadata to the extracted element."""
+    container_meta = pydantic_monty.ObjectMetadata(
+        producers=frozenset({'web_api'}),
+        consumers=frozenset({'admin'}),
+        tags=frozenset({'untrusted'}),
+    )
+    m = pydantic_monty.Monty('x[0]', inputs=['x'])
+    snap = m.start(inputs={'x': pydantic_monty.AnnotatedValue([10, 20], container_meta)})
+    assert isinstance(snap, pydantic_monty.MontyComplete)
+    assert snap.output == snapshot(10)
+    assert snap.metadata is not None
+    assert snap.metadata.producers == snapshot(frozenset({'web_api'}))
+    assert snap.metadata.consumers == snapshot(frozenset({'admin'}))
+    assert snap.metadata.tags == snapshot(frozenset({'untrusted'}))
+
+
+def test_container_metadata_propagates_through_negative_indexing():
+    """Negative indexing should also propagate container metadata."""
+    container_meta = pydantic_monty.ObjectMetadata(
+        tags=frozenset({'non_executable'}),
+    )
+    m = pydantic_monty.Monty('x[-1]', inputs=['x'])
+    snap = m.start(inputs={'x': pydantic_monty.AnnotatedValue([1, 2, 3], container_meta)})
+    assert isinstance(snap, pydantic_monty.MontyComplete)
+    assert snap.output == snapshot(3)
+    assert snap.metadata is not None
+    assert snap.metadata.tags == snapshot(frozenset({'non_executable'}))
+
+
+def test_container_metadata_on_resume_propagates_through_indexing():
+    """Metadata from an external function return (via resume) should propagate
+    through indexing — the primary scenario from the tiny-beaver bug."""
+    code = 'results = fetch()\nresults[0]'
+    m = pydantic_monty.Monty(code)
+    snap = m.start()
+    assert isinstance(snap, pydantic_monty.FunctionSnapshot)
+
+    container_meta = pydantic_monty.ObjectMetadata(
+        tags=frozenset({'__non_executable'}),
+    )
+    result = snap.resume(return_value=pydantic_monty.AnnotatedValue(['item_a', 'item_b'], container_meta))
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('item_a')
+    assert result.metadata is not None
+    assert result.metadata.tags == snapshot(frozenset({'__non_executable'}))
+
+
+# === Container-level metadata propagation through iteration ===
+
+
+def test_container_metadata_propagates_through_for_loop():
+    """Iterating a list with container-level metadata should propagate metadata
+    to each yielded element."""
+    container_meta = pydantic_monty.ObjectMetadata(
+        producers=frozenset({'api'}),
+        tags=frozenset({'untrusted'}),
+    )
+    code = 'total = 0\nfor item in x:\n    total = total + item\ntotal'
+    m = pydantic_monty.Monty(code, inputs=['x'])
+    snap = m.start(inputs={'x': pydantic_monty.AnnotatedValue([10, 20], container_meta)})
+    assert isinstance(snap, pydantic_monty.MontyComplete)
+    assert snap.output == snapshot(30)
+    assert snap.metadata is not None
+    assert snap.metadata.producers == snapshot(frozenset({'api'}))
+    assert snap.metadata.tags == snapshot(frozenset({'untrusted'}))
+
+
+def test_container_metadata_on_resume_propagates_through_iteration():
+    """Metadata from external function return should propagate through a for loop."""
+    code = 'results = fetch()\nfirst = None\nfor r in results:\n    first = r\n    break\nfirst'
+    m = pydantic_monty.Monty(code)
+    snap = m.start()
+    assert isinstance(snap, pydantic_monty.FunctionSnapshot)
+
+    container_meta = pydantic_monty.ObjectMetadata(
+        tags=frozenset({'__non_executable'}),
+    )
+    result = snap.resume(return_value=pydantic_monty.AnnotatedValue(['a', 'b'], container_meta))
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('a')
+    assert result.metadata is not None
+    assert result.metadata.tags == snapshot(frozenset({'__non_executable'}))
+
+
+# === Container metadata propagation through indexing then further ops ===
+
+
+def test_container_metadata_propagates_through_indexing_then_fstring():
+    """f"info: {x[0]}" should carry the container's metadata."""
+    container_meta = pydantic_monty.ObjectMetadata(
+        tags=frozenset({'secret'}),
+    )
+    code = "f'info: {x[0]}'"
+    m = pydantic_monty.Monty(code, inputs=['x'])
+    snap = m.start(inputs={'x': pydantic_monty.AnnotatedValue(['data'], container_meta)})
+    assert isinstance(snap, pydantic_monty.MontyComplete)
+    assert snap.output == snapshot('info: data')
+    assert snap.metadata is not None
+    assert snap.metadata.tags == snapshot(frozenset({'secret'}))
+
+
+def test_container_metadata_propagates_through_indexing_then_concat():
+    """x[0] + " suffix" should carry the container's metadata."""
+    container_meta = pydantic_monty.ObjectMetadata(
+        tags=frozenset({'non_executable'}),
+    )
+    code = "x[0] + ' suffix'"
+    m = pydantic_monty.Monty(code, inputs=['x'])
+    snap = m.start(inputs={'x': pydantic_monty.AnnotatedValue(['hello'], container_meta)})
+    assert isinstance(snap, pydantic_monty.MontyComplete)
+    assert snap.output == snapshot('hello suffix')
+    assert snap.metadata is not None
+    assert snap.metadata.tags == snapshot(frozenset({'non_executable'}))
+
+
+# === Container metadata in structured print callback ===
+
+
+def test_container_metadata_visible_in_structured_print_callback_after_indexing():
+    """structured_print_callback should see container metadata on indexed elements."""
+    container_meta = pydantic_monty.ObjectMetadata(
+        tags=frozenset({'__non_executable'}),
+    )
+    print_log: list[pydantic_monty.AnnotatedValue] = []
+
+    def on_print(stream: str, objects: list[pydantic_monty.AnnotatedValue], sep: str, end: str) -> None:
+        for obj in objects:
+            print_log.append(obj)
+
+    code = 'results = fetch()\nprint(results[0])'
+    m = pydantic_monty.Monty(code)
+    snap = m.start(structured_print_callback=on_print)
+    assert isinstance(snap, pydantic_monty.FunctionSnapshot)
+
+    snap.resume(return_value=pydantic_monty.AnnotatedValue(['item_a', 'item_b'], container_meta))
+    assert len(print_log) == snapshot(1)
+    assert print_log[0].value == snapshot('item_a')
+    assert print_log[0].metadata.tags == snapshot(frozenset({'__non_executable'}))
+
+
+def test_container_metadata_visible_in_structured_print_callback_after_iteration():
+    """structured_print_callback should see container metadata on iterated elements."""
+    container_meta = pydantic_monty.ObjectMetadata(
+        tags=frozenset({'__non_executable'}),
+    )
+    print_log: list[pydantic_monty.AnnotatedValue] = []
+
+    def on_print(stream: str, objects: list[pydantic_monty.AnnotatedValue], sep: str, end: str) -> None:
+        for obj in objects:
+            print_log.append(obj)
+
+    code = 'results = fetch()\nfor r in results:\n    print(r)'
+    m = pydantic_monty.Monty(code)
+    snap = m.start(structured_print_callback=on_print)
+    assert isinstance(snap, pydantic_monty.FunctionSnapshot)
+
+    snap.resume(return_value=pydantic_monty.AnnotatedValue(['a', 'b'], container_meta))
+    assert len(print_log) == snapshot(2)
+    assert print_log[0].value == snapshot('a')
+    assert print_log[0].metadata.tags == snapshot(frozenset({'__non_executable'}))
+    assert print_log[1].value == snapshot('b')
+    assert print_log[1].metadata.tags == snapshot(frozenset({'__non_executable'}))
+
+
+# === Fix #4: next() propagates metadata ===
+
+
+def test_next_propagates_iterator_metadata():
+    """next(iter(x)) should propagate the container's metadata to the returned element."""
+    container_meta = pydantic_monty.ObjectMetadata(
+        producers=frozenset({'api'}),
+        tags=frozenset({'untrusted'}),
+    )
+    code = 'it = iter(x)\nnext(it)'
+    m = pydantic_monty.Monty(code, inputs=['x'])
+    snap = m.start(inputs={'x': pydantic_monty.AnnotatedValue([10, 20], container_meta)})
+    assert isinstance(snap, pydantic_monty.MontyComplete)
+    assert snap.output == snapshot(10)
+    assert snap.metadata is not None
+    assert snap.metadata.producers == snapshot(frozenset({'api'}))
+    assert snap.metadata.tags == snapshot(frozenset({'untrusted'}))
+
+
+def test_next_on_resume_propagates_metadata():
+    """next() on an iterator created from an external function return
+    should propagate the container's metadata."""
+    code = 'results = fetch()\nit = iter(results)\nnext(it)'
+    m = pydantic_monty.Monty(code)
+    snap = m.start()
+    assert isinstance(snap, pydantic_monty.FunctionSnapshot)
+
+    container_meta = pydantic_monty.ObjectMetadata(
+        tags=frozenset({'__non_executable'}),
+    )
+    result = snap.resume(return_value=pydantic_monty.AnnotatedValue(['a', 'b'], container_meta))
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot('a')
+    assert result.metadata is not None
+    assert result.metadata.tags == snapshot(frozenset({'__non_executable'}))
+
+
+# === Fix #6: Builtins propagate container metadata ===
+
+
+def test_sum_propagates_container_metadata():
+    """sum(x) where x has container metadata should propagate it."""
+    container_meta = pydantic_monty.ObjectMetadata(
+        producers=frozenset({'api'}),
+        tags=frozenset({'financial'}),
+    )
+    m = pydantic_monty.Monty('sum(x)', inputs=['x'])
+    snap = m.start(inputs={'x': pydantic_monty.AnnotatedValue([10, 20], container_meta)})
+    assert isinstance(snap, pydantic_monty.MontyComplete)
+    assert snap.output == snapshot(30)
+    assert snap.metadata is not None
+    assert snap.metadata.producers == snapshot(frozenset({'api'}))
+    assert snap.metadata.tags == snapshot(frozenset({'financial'}))
+
+
+def test_min_propagates_container_metadata():
+    """min(x) where x has container metadata should propagate it."""
+    container_meta = pydantic_monty.ObjectMetadata(
+        tags=frozenset({'measurement'}),
+    )
+    m = pydantic_monty.Monty('min(x)', inputs=['x'])
+    snap = m.start(inputs={'x': pydantic_monty.AnnotatedValue([5, 3, 8], container_meta)})
+    assert isinstance(snap, pydantic_monty.MontyComplete)
+    assert snap.output == snapshot(3)
+    assert snap.metadata is not None
+    assert snap.metadata.tags == snapshot(frozenset({'measurement'}))
+
+
+def test_max_propagates_container_metadata():
+    """max(x) where x has container metadata should propagate it."""
+    container_meta = pydantic_monty.ObjectMetadata(
+        tags=frozenset({'measurement'}),
+    )
+    m = pydantic_monty.Monty('max(x)', inputs=['x'])
+    snap = m.start(inputs={'x': pydantic_monty.AnnotatedValue([5, 3, 8], container_meta)})
+    assert isinstance(snap, pydantic_monty.MontyComplete)
+    assert snap.output == snapshot(8)
+    assert snap.metadata is not None
+    assert snap.metadata.tags == snapshot(frozenset({'measurement'}))
+
+
+def test_sum_on_resume_propagates_container_metadata():
+    """sum() on an external function return should propagate container metadata."""
+    code = 'results = fetch()\nsum(results)'
+    m = pydantic_monty.Monty(code)
+    snap = m.start()
+    assert isinstance(snap, pydantic_monty.FunctionSnapshot)
+
+    container_meta = pydantic_monty.ObjectMetadata(
+        tags=frozenset({'__non_executable'}),
+    )
+    result = snap.resume(return_value=pydantic_monty.AnnotatedValue([10, 20, 30], container_meta))
+    assert isinstance(result, pydantic_monty.MontyComplete)
+    assert result.output == snapshot(60)
+    assert result.metadata is not None
+    assert result.metadata.tags == snapshot(frozenset({'__non_executable'}))
+
+
+# === Fix #5: dict.items() propagates key/value metadata to tuple elements ===
+
+
+# Note: DictItemsView per-entry metadata propagation (key_meta/value_meta flowing into
+# tuple elements) is tested at the Rust level in crates/monty/tests/metadata.rs.
+# The Python API can't easily construct annotated dicts with per-entry metadata, and
+# container-level metadata doesn't flow through .items() method calls (method call
+# metadata propagation is a separate deferred feature).

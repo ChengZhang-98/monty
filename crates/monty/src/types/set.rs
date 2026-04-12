@@ -674,8 +674,8 @@ impl Set {
     fn from_iterator(iter: MontyIter, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
         defer_drop_mut!(iter, vm);
         let mut set = Self::with_capacity(iter.size_hint(vm.heap));
-        while let Some(item) = iter.for_next(vm)? {
-            set.add(item, vm)?;
+        while let Some((item, meta)) = iter.for_next(vm)? {
+            set.add_with_meta(item, meta, vm)?;
         }
         Ok(set)
     }
@@ -685,7 +685,7 @@ impl Set {
     /// This is a convenience method used by helper methods that need to convert
     /// arbitrary iterables to sets. It uses `MontyIter` internally.
     fn from_iterable(iterable: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<Self> {
-        let iter = MontyIter::new(iterable, vm)?;
+        let iter = MontyIter::new(iterable, vm, MetadataId::DEFAULT)?;
         let set = Self::from_iterator(iter, vm)?;
         Ok(set)
     }

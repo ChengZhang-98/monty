@@ -15,6 +15,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapItem, HeapRead, heap_read_ref_as_field},
     intern::{StaticStrings, StringId},
+    metadata::MetadataId,
     resource::{ResourceError, ResourceTracker, check_repeat_size, check_replace_size},
     types::Type,
     value::{EitherStr, Value},
@@ -467,7 +468,7 @@ fn str_join<'h>(
     vm: &mut VM<'h, '_, impl ResourceTracker>,
 ) -> RunResult<Value> {
     // Create MontyIter from the iterable, with join-specific error message
-    let Ok(iter) = MontyIter::new(iterable, vm) else {
+    let Ok(iter) = MontyIter::new(iterable, vm, MetadataId::DEFAULT) else {
         return Err(ExcType::type_error_join_not_iterable());
     };
     defer_drop_mut!(iter, vm);
@@ -476,7 +477,7 @@ fn str_join<'h>(
     let mut result = String::new();
     let mut index = 0usize;
 
-    while let Some(item) = iter.for_next(vm)? {
+    while let Some((item, _meta)) = iter.for_next(vm)? {
         defer_drop!(item, vm);
         if index > 0 {
             result.push_str(separator.get(vm.heap));

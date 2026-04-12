@@ -8,6 +8,7 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::{DropWithHeap, HeapData},
+    metadata::MetadataId,
     resource::ResourceTracker,
     types::{List, MontyIter},
     value::Value,
@@ -28,6 +29,8 @@ use crate::{
 /// map(str, [1, 2, 3])               # ['1', '2', '3']
 /// ```
 pub fn builtin_map(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    // map(function, *iterables) — iterable metadata starts at index 1
+    let arg_meta: Vec<MetadataId> = vm.pending_arg_metadata.clone();
     let (positional, kwargs) = args.into_parts();
     defer_drop_mut!(positional, vm);
 
@@ -41,14 +44,16 @@ pub fn builtin_map(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
     defer_drop!(function, vm);
 
     let first_iterable = positional.next().expect("checked length above");
-    let first_iter = MontyIter::new(first_iterable, vm)?;
+    let first_meta = arg_meta.get(1).copied().unwrap_or_default();
+    let first_iter = MontyIter::new(first_iterable, vm, first_meta)?;
     defer_drop_mut!(first_iter, vm);
 
     let extra_iterators: Vec<MontyIter> = Vec::with_capacity(positional.len());
     defer_drop_mut!(extra_iterators, vm);
 
-    for iterable in positional {
-        extra_iterators.push(MontyIter::new(iterable, vm)?);
+    for (i, iterable) in positional.enumerate() {
+        let meta = arg_meta.get(i + 2).copied().unwrap_or_default();
+        extra_iterators.push(MontyIter::new(iterable, vm, meta)?);
     }
 
     let mut out = Vec::with_capacity(first_iter.size_hint(vm.heap));
@@ -57,15 +62,15 @@ pub fn builtin_map(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
     match extra_iterators.as_mut_slice() {
         // map(f, iter)
         [] => {
-            while let Some(item) = first_iter.for_next(vm)? {
+            while let Some((item, _meta)) = first_iter.for_next(vm)? {
                 let args = ArgValues::One(item);
                 out.push(vm.evaluate_function("map()", function, args)?);
             }
         }
         // map(f, iter1, iter2)
         [single] => {
-            while let Some(arg1) = first_iter.for_next(vm)? {
-                let Some(arg2) = single.for_next(vm)? else {
+            while let Some((arg1, _meta)) = first_iter.for_next(vm)? {
+                let Some((arg2, _meta)) = single.for_next(vm)? else {
                     arg1.drop_with_heap(vm);
                     break;
                 };
@@ -78,7 +83,7 @@ pub fn builtin_map(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -
             let mut items = Vec::with_capacity(1 + multiple.len());
 
             for iter in iter::once(&mut *first_iter).chain(multiple.iter_mut()) {
-                if let Some(item) = iter.for_next(vm)? {
+                if let Some((item, _meta)) = iter.for_next(vm)? {
                     items.push(item);
                 } else {
                     items.drop_with_heap(vm);
