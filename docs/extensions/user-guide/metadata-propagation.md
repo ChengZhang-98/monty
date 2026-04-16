@@ -257,6 +257,7 @@ Metadata flows automatically through these operations — no user action needed:
 | `{**d}`, `f(**kwargs)` | Keys and values preserve their per-entry metadata |
 | `lst[i]`, `d[key]` | `merge(container.meta, element.meta)` — container-level metadata is merged with per-element metadata |
 | `for x in lst` | Each `x` gets `merge(container.meta, element.meta)` |
+| `for i, x in enumerate(lst)` | `x` gets `merge(container.meta, element.meta)`; `i` (a synthesised integer) gets `DEFAULT` |
 | `next(iter(lst))` | Result gets `merge(container.meta, element.meta)` |
 | `sum(lst)`, `min(lst)`, `max(lst)` | Result carries container metadata (merged across iterated elements for `sum`) |
 | `not x`, `-x` | Result carries `x`'s metadata |

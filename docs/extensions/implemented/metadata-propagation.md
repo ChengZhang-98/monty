@@ -357,6 +357,7 @@ Metadata now enters and exits the VM through the public API.
 | **Builtin container metadata** | Done | All iteration-creating builtins (`all`, `any`, `sum`, `min`, `max`, `enumerate`, `filter`, `map`, `reversed`, `sorted`, `zip`) now read container metadata from `vm.pending_arg_metadata` and pass it to `MontyIter::new()`. `iter()` type constructor also captures metadata. Scalar-producing builtins (`sum`, `min`, `max`) set `pending_result_metadata`. |
 | **`DictItemsView` element metadata** | Done | `get_heap_item()` DictItemsView arm now uses `allocate_tuple_with_metadata()` with `key_meta_at()`/`value_meta_at()`, propagating per-entry metadata to tuple elements. |
 | **`collect_iterable_to_set` metadata** | Done | Both paths (fast-path via `advance()` and `for_next()` path) now use `set.add_with_meta()` to preserve per-element metadata. `Set::from_iterator()` also preserves metadata. |
+| **`enumerate()` tuple element metadata** | Done | `builtin_enumerate` now uses `allocate_tuple_with_metadata()` when building each `(index, item)` tuple. The item slot gets the `MetadataId` returned by `for_next()` (merged container + element metadata); the index slot gets `DEFAULT` (it is a synthesised integer, not data from the container). This ensures `unpack_sequence(2)` for `for i, r in enumerate(items)` pushes `r` with the correct metadata rather than `DEFAULT`. Previously the intermediate tuple was built with `allocate_tuple()`, silently discarding element metadata. |
 | **Default arguments** | Deferred | When function parameters use defaults, the default's metadata would need to propagate. Requires changes to argument binding. |
 
 | File | Change |
@@ -371,7 +372,7 @@ Metadata now enters and exits the VM through the public API.
 | `crates/monty/src/types/dict.rs` | Added `value_meta_for_key()` for subscript metadata resolution without `&mut VM`. Removed `#[expect(dead_code)]` from `value_meta_at`/`key_meta_at` (now used by `get_heap_item()`). |
 | `crates/monty/src/types/dict_view.rs` | `collect_iterable_to_set()` now uses `add_with_meta()` to preserve per-element metadata in both fast-path and `for_next()` paths. |
 | `crates/monty/src/types/set.rs` | `Set::from_iterator()` now uses `add_with_meta()` to preserve per-element metadata. |
-| `crates/monty/src/builtins/*.rs` | All iteration-creating builtins (`all`, `any`, `sum`, `min`/`max`, `enumerate`, `filter`, `map`, `reversed`, `sorted`, `zip`) read container metadata from `vm.pending_arg_metadata` and pass it to `MontyIter::new()`. `sum`, `min`, `max` set `pending_result_metadata`. `next` propagates via `pending_result_metadata`. |
+| `crates/monty/src/builtins/*.rs` | All iteration-creating builtins (`all`, `any`, `sum`, `min`/`max`, `enumerate`, `filter`, `map`, `reversed`, `sorted`, `zip`) read container metadata from `vm.pending_arg_metadata` and pass it to `MontyIter::new()`. `sum`, `min`, `max` set `pending_result_metadata`. `next` propagates via `pending_result_metadata`. `enumerate` additionally uses `allocate_tuple_with_metadata()` so per-element metadata is preserved in each `(index, item)` tuple. |
 | `crates/monty/src/types/list.rs` | Added `extend_with_meta()` for metadata-preserving list extension. |
 | `crates/monty-python/src/metadata.rs` | Added `validate_no_empty_strings()` — rejects empty strings in metadata labels. |
 
