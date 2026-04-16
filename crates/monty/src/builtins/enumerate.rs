@@ -8,15 +8,20 @@ use crate::{
     defer_drop, defer_drop_mut,
     exception_private::{ExcType, RunResult, SimpleException},
     heap::HeapData,
+    metadata::MetadataId,
     resource::ResourceTracker,
-    types::{List, MontyIter, PyTrait, allocate_tuple},
+    types::{List, MontyIter, PyTrait, allocate_tuple_with_metadata},
     value::Value,
 };
 
 /// Implementation of the enumerate() builtin function.
 ///
-/// Returns a list of (index, value) tuples.
-/// Note: In Python this returns an iterator, but we return a list for simplicity.
+/// Returns a list of `(index, value)` tuples, preserving per-element metadata from the
+/// source iterable. When the loop unpacks `for i, r in enumerate(items)`, `r` retains
+/// the metadata it carried inside `items` (e.g. `__non_executable` tags), because each
+/// tuple's second element is stored with that element's original `MetadataId`.
+///
+/// Note: In Python this returns a lazy iterator, but here we eagerly collect into a list.
 pub fn builtin_enumerate(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
     let container_meta = vm.pending_arg_metadata.first().copied().unwrap_or_default();
     let (iterable, start) = args.get_one_two_args("enumerate", vm.heap)?;
@@ -41,9 +46,16 @@ pub fn builtin_enumerate(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgVal
 
     let mut result: Vec<Value> = Vec::new();
 
-    while let Some((item, _meta)) = iter.for_next(vm)? {
-        // Create tuple (index, item)
-        let tuple_val = allocate_tuple(smallvec![Value::Int(index), item], vm.heap)?;
+    while let Some((item, item_meta)) = iter.for_next(vm)? {
+        // Preserve the element's metadata in the tuple so that when the loop
+        // unpacks `for i, r in enumerate(items)`, `r` keeps its original metadata
+        // (e.g. `__non_executable`). The index is a plain integer with no special
+        // metadata, so it gets the default.
+        let tuple_val = allocate_tuple_with_metadata(
+            smallvec![Value::Int(index), item],
+            smallvec![MetadataId::DEFAULT, item_meta],
+            vm.heap,
+        )?;
         result.push(tuple_val);
         index += 1;
     }
