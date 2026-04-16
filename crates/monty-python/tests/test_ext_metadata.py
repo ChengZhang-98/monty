@@ -766,3 +766,58 @@ def test_sum_on_resume_propagates_container_metadata():
 # The Python API can't easily construct annotated dicts with per-entry metadata, and
 # container-level metadata doesn't flow through .items() method calls (method call
 # metadata propagation is a separate deferred feature).
+
+
+# === Fix #9: enumerate() preserves element metadata when unpacking ===
+
+
+def test_enumerate_propagates_metadata_to_unpacked_value():
+    """for i, r in enumerate(items) — the value variable r must carry the
+    container's metadata.  Previously the intermediate (index, value) tuple was
+    built without per-element metadata so `r` arrived with DEFAULT metadata."""
+    container_meta = pydantic_monty.ObjectMetadata(
+        tags=frozenset({'__non_executable'}),
+    )
+    print_log: list[pydantic_monty.AnnotatedValue] = []
+
+    def on_print(stream: str, objects: list[pydantic_monty.AnnotatedValue], sep: str, end: str) -> None:
+        for obj in objects:
+            print_log.append(obj)
+
+    code = 'results = fetch()\nfor i, r in enumerate(results):\n    print(r)'
+    m = pydantic_monty.Monty(code)
+    snap = m.start(structured_print_callback=on_print)
+    assert isinstance(snap, pydantic_monty.FunctionSnapshot)
+
+    snap.resume(return_value=pydantic_monty.AnnotatedValue(['a', 'b'], container_meta))
+    assert len(print_log) == snapshot(2)
+    assert print_log[0].value == snapshot('a')
+    assert print_log[0].metadata.tags == snapshot(frozenset({'__non_executable'}))
+    assert print_log[1].value == snapshot('b')
+    assert print_log[1].metadata.tags == snapshot(frozenset({'__non_executable'}))
+
+
+def test_enumerate_index_has_no_metadata():
+    """The index variable i in `for i, r in enumerate(items)` should have
+    default (empty) metadata — it is a synthesised integer, not data from the
+    tagged container."""
+    container_meta = pydantic_monty.ObjectMetadata(
+        tags=frozenset({'__non_executable'}),
+    )
+    print_log: list[pydantic_monty.AnnotatedValue] = []
+
+    def on_print(stream: str, objects: list[pydantic_monty.AnnotatedValue], sep: str, end: str) -> None:
+        for obj in objects:
+            print_log.append(obj)
+
+    code = 'results = fetch()\nfor i, r in enumerate(results):\n    print(i)'
+    m = pydantic_monty.Monty(code)
+    snap = m.start(structured_print_callback=on_print)
+    assert isinstance(snap, pydantic_monty.FunctionSnapshot)
+
+    snap.resume(return_value=pydantic_monty.AnnotatedValue(['a', 'b'], container_meta))
+    assert len(print_log) == snapshot(2)
+    assert print_log[0].value == snapshot(0)
+    assert print_log[0].metadata.tags == snapshot(frozenset())
+    assert print_log[1].value == snapshot(1)
+    assert print_log[1].metadata.tags == snapshot(frozenset())
