@@ -20,13 +20,14 @@ use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{
     async_dispatch::{ReplCleanupNotifier, await_repl_transition, dispatch_loop_repl},
+    build::{extract_source_code, py_type_check},
     convert::{get_docstring, monty_to_py},
     dataclass::DcRegistry,
     exceptions::{MontyError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
     metadata::py_to_annotated,
-    monty_cls::{EitherProgress, call_os_callback_parts, extract_source_code, py_type_check},
+    monty_cls::{EitherProgress, call_os_callback_parts},
     mount::OsHandler,
     print_target::PrintTarget,
 };
@@ -195,20 +196,23 @@ impl PyMontyRepl {
             return result;
         }
 
-        let mut guard = self
-            .repl
-            .try_lock()
-            .map_err(|_| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
-        let repl = guard
-            .as_mut()
-            .ok_or_else(|| PyRuntimeError::new_err("REPL session is currently executing another snippet"))?;
+        // Move the REPL state out of the mutex before releasing the GIL so
+        // competing calls fail fast with "currently executing" instead of
+        // blocking on the mutex while holding the GIL.
+        let repl = self.take_repl()?;
 
         // `with_writer` only holds any collector lock for the duration of the
-        // VM call.
-        let result = match repl {
-            EitherRepl::NoLimit(repl) => print_target.with_writer(|w| repl.feed_run(code, input_values, w)),
-            EitherRepl::Limited(repl) => print_target.with_writer(|w| repl.feed_run(code, input_values, w)),
-        };
+        // VM call. The GIL is released around the call so other Python threads
+        // can run while the snippet executes.
+        let (result, restored_repl) = py.detach(move || {
+            let mut repl = repl;
+            let result = match &mut repl {
+                EitherRepl::NoLimit(repl) => print_target.with_writer(|w| repl.feed_run(code, input_values, w)),
+                EitherRepl::Limited(repl) => print_target.with_writer(|w| repl.feed_run(code, input_values, w)),
+            };
+            (result, repl)
+        });
+        self.put_repl(restored_repl);
 
         let output = match result {
             Ok(v) => v,
@@ -715,13 +719,17 @@ impl PyMontyRepl {
         let Some(state_mutex) = &self.type_check_state else {
             return Ok(());
         };
-        let state = state_mutex.lock().unwrap_or_else(PoisonError::into_inner);
-        let stubs_ref = if state.committed_stubs.is_empty() {
-            None
-        } else {
-            Some(state.committed_stubs.as_str())
+        // Clone the accumulated stubs before type-checking so the mutex is not
+        // held while `py_type_check` releases the GIL for CPU-bound work.
+        let stubs = {
+            let state = state_mutex.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.committed_stubs.is_empty() {
+                None
+            } else {
+                Some(state.committed_stubs.clone())
+            }
         };
-        py_type_check(py, code, &self.script_name, stubs_ref, "repl_type_stubs.pyi")
+        py_type_check(py, code, &self.script_name, stubs.as_deref(), "repl_type_stubs.pyi")
     }
 
     /// Appends a snippet directly to committed type-check stubs.
