@@ -35,7 +35,7 @@ use crate::{
     heap::{DropWithHeap, HeapData, HeapId},
     intern::StaticStrings,
     modules::ModuleFunctions,
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
     types::{Module, PyTrait, RePattern, Str, Type, re_pattern::value_to_str},
     value::Value,
 };
@@ -89,7 +89,7 @@ pub(crate) enum ReFunctions {
 ///
 /// # Panics
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<HeapId> {
     let mut module = Module::new(StaticStrings::Re);
 
     // Functions
@@ -97,85 +97,85 @@ pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId
         StaticStrings::Compile,
         Value::ModuleFunction(ModuleFunctions::Re(ReFunctions::Compile)),
         vm,
-    );
+    )?;
     module.set_attr(
         StaticStrings::Search,
         Value::ModuleFunction(ModuleFunctions::Re(ReFunctions::Search)),
         vm,
-    );
+    )?;
     module.set_attr(
         StaticStrings::Match,
         Value::ModuleFunction(ModuleFunctions::Re(ReFunctions::Match)),
         vm,
-    );
+    )?;
     module.set_attr(
         StaticStrings::Fullmatch,
         Value::ModuleFunction(ModuleFunctions::Re(ReFunctions::Fullmatch)),
         vm,
-    );
+    )?;
     module.set_attr(
         StaticStrings::Findall,
         Value::ModuleFunction(ModuleFunctions::Re(ReFunctions::Findall)),
         vm,
-    );
+    )?;
     module.set_attr(
         StaticStrings::Sub,
         Value::ModuleFunction(ModuleFunctions::Re(ReFunctions::Sub)),
         vm,
-    );
+    )?;
     module.set_attr(
         StaticStrings::Split,
         Value::ModuleFunction(ModuleFunctions::Re(ReFunctions::Split)),
         vm,
-    );
+    )?;
     module.set_attr(
         StaticStrings::Finditer,
         Value::ModuleFunction(ModuleFunctions::Re(ReFunctions::Finditer)),
         vm,
-    );
+    )?;
     module.set_attr(
         StaticStrings::Escape,
         Value::ModuleFunction(ModuleFunctions::Re(ReFunctions::Escape)),
         vm,
-    );
+    )?;
 
     // Flag constants
-    module.set_attr(StaticStrings::NoFlag, Value::Int(i64::from(NOFLAG)), vm);
-    module.set_attr(StaticStrings::Ignorecase, Value::Int(i64::from(IGNORECASE)), vm);
-    module.set_attr(StaticStrings::I, Value::Int(i64::from(IGNORECASE)), vm);
-    module.set_attr(StaticStrings::MultilineFlag, Value::Int(i64::from(MULTILINE)), vm);
-    module.set_attr(StaticStrings::M, Value::Int(i64::from(MULTILINE)), vm);
-    module.set_attr(StaticStrings::DotallFlag, Value::Int(i64::from(DOTALL)), vm);
-    module.set_attr(StaticStrings::S, Value::Int(i64::from(DOTALL)), vm);
-    module.set_attr(StaticStrings::AsciiFlag, Value::Int(i64::from(ASCII)), vm);
-    module.set_attr(StaticStrings::A, Value::Int(i64::from(ASCII)), vm);
+    module.set_attr(StaticStrings::NoFlag, Value::Int(i64::from(NOFLAG)), vm)?;
+    module.set_attr(StaticStrings::Ignorecase, Value::Int(i64::from(IGNORECASE)), vm)?;
+    module.set_attr(StaticStrings::I, Value::Int(i64::from(IGNORECASE)), vm)?;
+    module.set_attr(StaticStrings::MultilineFlag, Value::Int(i64::from(MULTILINE)), vm)?;
+    module.set_attr(StaticStrings::M, Value::Int(i64::from(MULTILINE)), vm)?;
+    module.set_attr(StaticStrings::DotallFlag, Value::Int(i64::from(DOTALL)), vm)?;
+    module.set_attr(StaticStrings::S, Value::Int(i64::from(DOTALL)), vm)?;
+    module.set_attr(StaticStrings::AsciiFlag, Value::Int(i64::from(ASCII)), vm)?;
+    module.set_attr(StaticStrings::A, Value::Int(i64::from(ASCII)), vm)?;
 
     // Exception types
     module.set_attr(
         StaticStrings::PatternError,
         Value::Builtin(Builtins::ExcType(ExcType::RePatternError)),
         vm,
-    );
+    )?;
     // `re.error` is the historical alias for `re.PatternError` (still widely used)
     module.set_attr(
         StaticStrings::Error,
         Value::Builtin(Builtins::ExcType(ExcType::RePatternError)),
         vm,
-    );
+    )?;
 
     // Constructed types
     module.set_attr(
         StaticStrings::PatternClass,
         Value::Builtin(Builtins::Type(Type::RePattern)),
         vm,
-    );
+    )?;
     module.set_attr(
         StaticStrings::MatchClass,
         Value::Builtin(Builtins::Type(Type::ReMatch)),
         vm,
-    );
+    )?;
 
-    vm.heap.allocate(HeapData::Module(module))
+    Ok(vm.heap.allocate(HeapData::Module(module))?)
 }
 
 /// Dispatches a call to a `re` module function.

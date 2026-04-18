@@ -7,7 +7,7 @@ fn print_single_string() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "hello\n");
@@ -20,7 +20,7 @@ fn print_multiple_args() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "hello world\n");
@@ -38,7 +38,7 @@ fn print_multiple_statements() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "one\ntwo\nthree\n");
@@ -51,7 +51,7 @@ fn print_empty() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "\n");
@@ -64,7 +64,7 @@ fn print_integers() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "1 2 3\n");
@@ -77,7 +77,7 @@ fn print_mixed_types() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "count: 42 True\n");
@@ -97,7 +97,7 @@ greet('Bob')
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "Hello Alice\nHello Bob\n");
@@ -114,7 +114,7 @@ for i in range(3):
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "0\n1\n2\n");
@@ -127,7 +127,7 @@ fn collect_output_accessible_after_run() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "test\n");
@@ -141,7 +141,7 @@ fn writer_reuse_accumulates() {
     ex1.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
 
@@ -149,7 +149,7 @@ fn writer_reuse_accumulates() {
     ex2.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
 
@@ -177,7 +177,7 @@ fn print_custom_sep() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "a-b-c\n");
@@ -190,7 +190,7 @@ fn print_custom_end() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "hello!");
@@ -208,7 +208,7 @@ fn print_custom_sep_and_end() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "x, y, z\n---\n");
@@ -221,7 +221,7 @@ fn print_empty_sep() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "abc\n");
@@ -235,7 +235,7 @@ fn print_empty_end() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "firstsecond\n");
@@ -249,7 +249,7 @@ fn print_sep_none() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     // In Python, sep=None means use default, but we treat it as empty string for simplicity
@@ -265,7 +265,7 @@ fn print_end_none() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "hello\n");
@@ -279,7 +279,7 @@ fn print_flush_ignored() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "test\n");
@@ -293,7 +293,7 @@ fn print_kwargs_dict() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "a-b\n");
@@ -306,7 +306,7 @@ fn print_only_kwargs_no_args() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "!");
@@ -319,7 +319,7 @@ fn print_multiline_sep() {
     ex.run(
         Vec::<monty::MontyObject>::new(),
         NoLimitTracker,
-        PrintWriter::Collect(&mut output),
+        PrintWriter::CollectString(&mut output),
     )
     .unwrap();
     assert_eq!(output, "1\n2\n3\n");

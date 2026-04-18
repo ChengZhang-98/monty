@@ -9,32 +9,35 @@
 
 use crate::{
     bytecode::VM,
+    exception_private::RunResult,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
     types::Module,
     value::{Marker, Value},
 };
 
 /// Creates the `typing` module and allocates it on the heap.
 ///
-/// Returns a HeapId pointing to the newly allocated module.
+/// Returns a HeapId pointing to the newly allocated module. Returns `Err` when
+/// a heap allocation fails (e.g., the `max_memory` limit is exceeded while
+/// populating the module's attribute dict).
 ///
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<HeapId> {
     let mut module = Module::new(StaticStrings::Typing);
 
     // typing.TYPE_CHECKING - always False
-    module.set_attr(StaticStrings::TypeChecking, Value::Bool(false), vm);
+    module.set_attr(StaticStrings::TypeChecking, Value::Bool(false), vm)?;
 
     // Export all typing markers as module attributes
     for ss in MARKER_ATTRS {
-        module.set_attr(*ss, Value::Marker(Marker(*ss)), vm);
+        module.set_attr(*ss, Value::Marker(Marker(*ss)), vm)?;
     }
 
-    vm.heap.allocate(HeapData::Module(module))
+    Ok(vm.heap.allocate(HeapData::Module(module))?)
 }
 
 /// Typing marker attributes exported by this module.

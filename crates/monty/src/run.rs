@@ -91,8 +91,13 @@ impl MontyRun {
     }
 
     /// Executes the code to completion with no resource limits, printing to stdout/stderr.
-    pub fn run_no_limits(&self, inputs: Vec<impl Into<AnnotatedObject>>) -> Result<MontyObject, MontyException> {
-        let inputs = inputs.into_iter().map(Into::into).collect();
+    ///
+    /// Accepts `Vec<MontyObject>` for inference ergonomics — the common test
+    /// path is `run_no_limits(vec![])` where `impl Into<AnnotatedObject>`
+    /// would leave the element type unresolvable. Values are wrapped into
+    /// `AnnotatedObject` with empty metadata before executing.
+    pub fn run_no_limits(&self, inputs: Vec<MontyObject>) -> Result<MontyObject, MontyException> {
+        let inputs: Vec<AnnotatedObject> = inputs.into_iter().map(Into::into).collect();
         self.run(inputs, NoLimitTracker, PrintWriter::Stdout)
     }
 
@@ -317,9 +322,7 @@ impl Executor {
         let result = HeapReader::with(&mut heap, |heap| {
             let mut vm = VM::new(globals, heap, &self.interns, print.reborrow());
             self.populate_inputs(inputs, &mut vm)?;
-            let result = self.run_to_completion(&mut vm);
-            vm.cleanup();
-            result
+            self.run_to_completion(&mut vm)
         });
 
         if heap.size() > heap_capacity {
@@ -426,8 +429,6 @@ impl Executor {
             let py_object = frame_exit_to_object(frame_exit_result, &mut vm)
                 .map_err(|e| e.into_python_exception(&self.interns, &self.code))?;
 
-            vm.cleanup();
-
             // Drop globals with proper ref counting
             for value in globals {
                 value.drop_with_heap(vm.heap);
@@ -457,7 +458,7 @@ impl Executor {
     /// Converts `MontyObject` inputs to `Value`s and writes them into the VM's globals.
     ///
     /// This runs with the VM alive so that `to_value` has access to the full VM context.
-    /// On error partway through, the VM's `cleanup()` (via drop) will drain globals and
+    /// On error partway through, the VM's `Drop` impl will drain globals and
     /// properly decrement refcounts for any already-converted values.
     pub(crate) fn populate_inputs(
         &self,

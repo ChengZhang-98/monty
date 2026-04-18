@@ -1,3 +1,4 @@
+import asyncio
 from typing import Callable, Literal
 
 import pytest
@@ -208,328 +209,204 @@ list(map(print, [1, 2, 3]))
     assert ''.join(output) == snapshot('1\n2\n3\n')
 
 
-# === structured_print_callback tests ===
+def test_collect_streams_run_returns_raw_output() -> None:
+    m = pydantic_monty.Monty('print("a"); print("b", 1); 123')
+    collector = pydantic_monty.CollectStreams()
+
+    result = m.run(print_callback=collector)
+
+    assert result == snapshot(123)
+    assert collector.output == snapshot([('stdout', 'a\nb 1\n')])
 
 
-StructuredCall = tuple[str, list[object], str, str]
-StructuredPrintCallback = Callable[[str, list[pydantic_monty.AnnotatedValue], str, str], None]
+def test_collect_streams_repr() -> None:
+    collector = pydantic_monty.CollectStreams()
+
+    assert collector.output == snapshot([])
+    assert repr(collector) == snapshot('CollectStreams(output=[])')
+
+    pydantic_monty.Monty('print("hello")').run(print_callback=collector)
+
+    assert collector.output == snapshot([('stdout', 'hello\n')])
+    assert repr(collector) == snapshot("CollectStreams(output=[('stdout', 'hello\\n')])")
 
 
-def make_structured_collector() -> tuple[list[StructuredCall], StructuredPrintCallback]:
-    """Create a structured print callback that collects calls into a list.
+def test_collect_string_run_returns_raw_output() -> None:
+    m = pydantic_monty.Monty('print("a"); print("b", 1); 123')
+    collector = pydantic_monty.CollectString()
 
-    Unwraps ``AnnotatedValue`` objects to plain values so existing tests
-    can compare against simple Python literals.
-    """
-    calls: list[StructuredCall] = []
+    result = m.run(print_callback=collector)
 
-    def callback(stream: str, objects: list[pydantic_monty.AnnotatedValue], sep: str, end: str) -> None:
-        assert stream == 'stdout'
-        calls.append((stream, [obj.value for obj in objects], sep, end))
-
-    return calls, callback
+    assert result == snapshot(123)
+    assert collector.output == snapshot('a\nb 1\n')
 
 
-def test_structured_print_basic() -> None:
-    m = pydantic_monty.Monty('print("hello")')
-    calls, callback = make_structured_collector()
-    m.run(structured_print_callback=callback)
-    assert calls == snapshot([('stdout', ['hello'], ' ', '\n')])
+def test_collect_string_repr() -> None:
+    collector = pydantic_monty.CollectString()
+
+    assert collector.output == snapshot('')
+    assert repr(collector) == snapshot("CollectString(output='')")
+
+    pydantic_monty.Monty('print("hello")').run(print_callback=collector)
+
+    assert collector.output == snapshot('hello\n')
+    assert repr(collector) == snapshot("CollectString(output='hello\\n')")
 
 
-def test_structured_print_multiple_args() -> None:
-    m = pydantic_monty.Monty('print(1, "hello", [1, 2])')
-    calls, callback = make_structured_collector()
-    m.run(structured_print_callback=callback)
-    assert calls == snapshot([('stdout', [1, 'hello', [1, 2]], ' ', '\n')])
+def test_collect_string_reuse_across_runs_accumulates() -> None:
+    collector = pydantic_monty.CollectString()
+
+    assert pydantic_monty.Monty('print("one")').run(print_callback=collector) is None
+    assert pydantic_monty.Monty('print("two")').run(print_callback=collector) is None
+
+    assert collector.output == snapshot('one\ntwo\n')
 
 
-def test_structured_print_preserves_types() -> None:
-    m = pydantic_monty.Monty('print(42, 3.14, True, None, "text")')
-    calls, callback = make_structured_collector()
-    m.run(structured_print_callback=callback)
-    assert len(calls) == snapshot(1)
-    _, objects, _, _ = calls[0]
-    assert objects == snapshot([42, 3.14, True, None, 'text'])
-    assert type(objects[0]) is int
-    assert type(objects[1]) is float
-    assert type(objects[2]) is bool
-    assert objects[3] is None
-    assert type(objects[4]) is str
-
-
-def test_structured_print_nested_containers() -> None:
-    m = pydantic_monty.Monty('print({"a": [1, 2]}, (3, 4))')
-    calls, callback = make_structured_collector()
-    m.run(structured_print_callback=callback)
-    assert calls == snapshot([('stdout', [{'a': [1, 2]}, (3, 4)], ' ', '\n')])
-
-
-def test_structured_print_custom_sep_end() -> None:
-    m = pydantic_monty.Monty('print(1, 2, 3, sep="-", end="!")')
-    calls, callback = make_structured_collector()
-    m.run(structured_print_callback=callback)
-    assert calls == snapshot([('stdout', [1, 2, 3], '-', '!')])
-
-
-def test_structured_print_empty() -> None:
-    m = pydantic_monty.Monty('print()')
-    calls, callback = make_structured_collector()
-    m.run(structured_print_callback=callback)
-    assert calls == snapshot([('stdout', [], ' ', '\n')])
-
-
-def test_structured_print_multiple_calls() -> None:
+def test_collect_streams_start_resume_uses_collector_only() -> None:
     code = """
-print("line 1")
-print(42)
+print("before")
+x = fetch()
+print("after", x)
 """
     m = pydantic_monty.Monty(code)
-    calls, callback = make_structured_collector()
-    m.run(structured_print_callback=callback)
-    assert calls == snapshot(
-        [
-            ('stdout', ['line 1'], ' ', '\n'),
-            ('stdout', [42], ' ', '\n'),
-        ]
-    )
+    collector = pydantic_monty.CollectStreams()
+
+    progress = m.start(print_callback=collector)
+
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert not hasattr(progress, 'print_output')
+    assert collector.output == snapshot([('stdout', 'before\n')])
+
+    complete = progress.resume({'return_value': 5})
+
+    assert isinstance(complete, pydantic_monty.MontyComplete)
+    assert not hasattr(complete, 'print_output')
+    assert complete.output is None
+    assert collector.output == snapshot([('stdout', 'before\nafter 5\n')])
 
 
-def test_structured_print_non_serializable_fallback() -> None:
-    """Non-JSON-serializable types produce NonSerializable objects."""
-    code = 'print(range(5))'
+def test_collect_streams_error_stays_on_collector() -> None:
+    m = pydantic_monty.Monty('print("about to fail"); raise ValueError("boom")')
+    collector = pydantic_monty.CollectStreams()
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(print_callback=collector)
+
+    assert collector.output == snapshot([('stdout', 'about to fail\n')])
+    assert not hasattr(exc_info.value, 'print_output')
+
+
+def test_collect_string_error_stays_on_collector() -> None:
+    m = pydantic_monty.Monty('print("about to fail"); raise ValueError("boom")')
+    collector = pydantic_monty.CollectString()
+
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        m.run(print_callback=collector)
+
+    assert collector.output == snapshot('about to fail\n')
+    assert not hasattr(exc_info.value, 'print_output')
+
+
+def test_collect_streams_run_async_accumulates_across_external_call() -> None:
+    code = """
+print("before")
+x = await fetch()
+print("after", x)
+"""
     m = pydantic_monty.Monty(code)
-    calls, callback = make_structured_collector()
-    m.run(structured_print_callback=callback)
-    assert len(calls) == snapshot(1)
-    _, objects, _, _ = calls[0]
-    # range() is not JSON-serializable, so it becomes NonSerializable
-    assert len(objects) == 1
-    obj = objects[0]
-    assert isinstance(obj, pydantic_monty.NonSerializable)
-    assert obj.type_name == snapshot('range')
-    assert obj.repr == snapshot('range(0, 5)')
-    # str() returns the repr string for backward compatibility
-    assert str(obj) == snapshot('range(0, 5)')
+    collector = pydantic_monty.CollectStreams()
 
+    async def fetch() -> int:
+        return 10
 
-def test_structured_print_both_callbacks_error() -> None:
-    """Providing both print_callback and structured_print_callback should raise."""
-    m = pydantic_monty.Monty('print("hello")')
-    with pytest.raises(ValueError, match='cannot specify both'):
-        m.run(
-            print_callback=lambda stream, text: None,
-            structured_print_callback=lambda stream, objects, sep, end: None,
+    async def go() -> object:
+        return await m.run_async(
+            external_functions={'fetch': fetch},
+            print_callback=collector,
         )
 
+    result = asyncio.run(go())
 
-def test_structured_print_repl_feed_run() -> None:
-    """Test structured_print_callback works with MontyRepl.feed_run."""
-    repl = pydantic_monty.MontyRepl()
-    calls, callback = make_structured_collector()
-    repl.feed_run('print(1, "two", [3])', structured_print_callback=callback)
-    assert calls == snapshot([('stdout', [1, 'two', [3]], ' ', '\n')])
+    assert result is None
+    assert collector.output == snapshot([('stdout', 'before\nafter 10\n')])
 
 
-def test_structured_print_repl_feed_start() -> None:
-    """Test structured_print_callback works with MontyRepl.feed_start."""
-    repl = pydantic_monty.MontyRepl()
-    calls, callback = make_structured_collector()
-    result = repl.feed_start('print(1, 2)', structured_print_callback=callback)
-    assert isinstance(result, pydantic_monty.MontyComplete)
-    assert calls == snapshot([('stdout', [1, 2], ' ', '\n')])
-
-
-def test_non_serializable_isinstance_check() -> None:
-    """NonSerializable can be detected with isinstance() in callback."""
-    code = 'print(1, range(3), "hello")'
+def test_collect_string_run_async_accumulates_across_external_call() -> None:
+    code = """
+print("before")
+x = await fetch()
+print("after", x)
+"""
     m = pydantic_monty.Monty(code)
-    calls, callback = make_structured_collector()
-    m.run(structured_print_callback=callback)
-    _, objects, _, _ = calls[0]
-    assert not isinstance(objects[0], pydantic_monty.NonSerializable)
-    assert isinstance(objects[1], pydantic_monty.NonSerializable)
-    assert not isinstance(objects[2], pydantic_monty.NonSerializable)
+    collector = pydantic_monty.CollectString()
+
+    async def fetch() -> int:
+        return 10
+
+    async def go() -> object:
+        return await m.run_async(
+            external_functions={'fetch': fetch},
+            print_callback=collector,
+        )
+
+    result = asyncio.run(go())
+
+    assert result is None
+    assert collector.output == snapshot('before\nafter 10\n')
 
 
-def test_non_serializable_equality() -> None:
-    """NonSerializable objects support equality comparison."""
-    a = pydantic_monty.NonSerializable('range', 'range(0, 5)')
-    b = pydantic_monty.NonSerializable('range', 'range(0, 5)')
-    c = pydantic_monty.NonSerializable('iterator', '<iterator>')
-    assert a == b
-    assert a != c
-
-
-def test_non_serializable_iterator() -> None:
-    """Iterators produce NonSerializable with type_name='iterator'."""
-    code = 'print(iter([1, 2, 3]))'
+def test_load_snapshot_uses_fresh_collect_string() -> None:
+    code = """
+print("before")
+x = fetch()
+print("after", x)
+"""
     m = pydantic_monty.Monty(code)
-    calls, callback = make_structured_collector()
-    m.run(structured_print_callback=callback)
-    _, objects, _, _ = calls[0]
-    obj = objects[0]
-    assert isinstance(obj, pydantic_monty.NonSerializable)
-    assert obj.type_name == snapshot('iterator')
+    first_collector = pydantic_monty.CollectString()
+    progress = m.start(print_callback=first_collector)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert first_collector.output == snapshot('before\n')
+
+    data = progress.dump()
+    loaded_collector = pydantic_monty.CollectString()
+    loaded = pydantic_monty.load_snapshot(data, print_callback=loaded_collector)
+    assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
+    complete = loaded.resume({'return_value': 10})
+
+    assert isinstance(complete, pydantic_monty.MontyComplete)
+    assert complete.output is None
+    assert first_collector.output == snapshot('before\n')
+    assert loaded_collector.output == snapshot('after 10\n')
 
 
-def test_structured_print_after_resume() -> None:
-    """Structured callback works after feed_start + resume (regression test).
+def test_load_snapshot_uses_fresh_collect_streams() -> None:
+    code = """
+print("before")
+x = fetch()
+print("after", x)
+"""
+    m = pydantic_monty.Monty(code)
+    first_collector = pydantic_monty.CollectStreams()
+    progress = m.start(print_callback=first_collector)
+    assert isinstance(progress, pydantic_monty.FunctionSnapshot)
+    assert first_collector.output == snapshot([('stdout', 'before\n')])
 
-    Previously, resume() always created CallbackStringPrint even when the stored
-    callback was a StructuredCallbackMarker, causing TypeError when print() was
-    called with non-literal arguments after resume.
-    """
-    repl = pydantic_monty.MontyRepl()
-    calls, callback = make_structured_collector()
-    code = 'x = get_value()\nprint(f"result: {x}")'
-    result = repl.feed_start(code, structured_print_callback=callback)
-    assert isinstance(result, pydantic_monty.FunctionSnapshot)
-    result = result.resume(return_value=42)
-    assert isinstance(result, pydantic_monty.MontyComplete)
-    assert calls == snapshot([('stdout', ['result: 42'], ' ', '\n')])
+    data = progress.dump()
+    loaded_collector = pydantic_monty.CollectStreams()
+    loaded = pydantic_monty.load_snapshot(data, print_callback=loaded_collector)
+    assert isinstance(loaded, pydantic_monty.FunctionSnapshot)
+    complete = loaded.resume({'return_value': 10})
+
+    assert isinstance(complete, pydantic_monty.MontyComplete)
+    assert complete.output is None
+    assert first_collector.output == snapshot([('stdout', 'before\n')])
+    assert loaded_collector.output == snapshot([('stdout', 'after 10\n')])
 
 
-def test_structured_print_type_of_dataclass() -> None:
-    """type() on a registered dataclass doesn't crash structured_print_callback (regression).
-
-    Previously, printing type() of a dataclass instance via structured_print_callback
-    raised AttributeError because the conversion tried to look up 'dataclass' in
-    Python's builtins module.
-    """
-    from dataclasses import dataclass
-
-    @dataclass(frozen=True)
-    class WebFetchResult:
-        status_code: int
-        content: str
-
-    repl = pydantic_monty.MontyRepl(dataclass_registry=[WebFetchResult])
-    calls, callback = make_structured_collector()
-
-    # Assign a dataclass instance via external function resume
-    result = repl.feed_start(
-        'page = fetch_page()',
-        structured_print_callback=callback,
+def test_collectors_are_valid_print_callback_values() -> None:
+    m = pydantic_monty.Monty('None')
+    with pytest.raises(TypeError) as exc_info:
+        m.run(print_callback='collect-string')  # type: ignore[arg-type]
+    assert str(exc_info.value) == snapshot(
+        'print_callback must be a callable, CollectStreams(), CollectString(), or None'
     )
-    assert isinstance(result, pydantic_monty.FunctionSnapshot)
-    result = result.resume(return_value=WebFetchResult(status_code=200, content='hello'))
-    assert isinstance(result, pydantic_monty.MontyComplete)
-
-    # print(type(page)) should not raise
-    calls.clear()
-    result = repl.feed_start(
-        'print(type(page))',
-        structured_print_callback=callback,
-    )
-    assert isinstance(result, pydantic_monty.MontyComplete)
-    assert len(calls) == snapshot(1)
-    _, objects, _, _ = calls[0]
-    obj = objects[0]
-    assert isinstance(obj, pydantic_monty.NonSerializable)
-    assert obj.type_name == snapshot('type')
-    assert obj.repr == snapshot("<class 'dataclass'>")
-
-
-# === structured_print_callback metadata tests ===
-
-
-def make_annotated_structured_collector() -> tuple[
-    list[tuple[str, list[pydantic_monty.AnnotatedValue], str, str]], StructuredPrintCallback
-]:
-    """Create a structured print callback that keeps full AnnotatedValue objects."""
-    calls: list[tuple[str, list[pydantic_monty.AnnotatedValue], str, str]] = []
-
-    def callback(stream: str, objects: list[pydantic_monty.AnnotatedValue], sep: str, end: str) -> None:
-        assert stream == 'stdout'
-        calls.append((stream, list(objects), sep, end))
-
-    return calls, callback
-
-
-def test_structured_print_annotated_value_type() -> None:
-    """Each object in the callback is an AnnotatedValue with .value and .metadata."""
-    m = pydantic_monty.Monty('print("hello")')
-    calls, callback = make_annotated_structured_collector()
-    m.run(structured_print_callback=callback)
-    assert len(calls) == snapshot(1)
-    _, objects, _, _ = calls[0]
-    assert len(objects) == snapshot(1)
-    obj = objects[0]
-    assert isinstance(obj, pydantic_monty.AnnotatedValue)
-    assert obj.value == snapshot('hello')
-    assert isinstance(obj.metadata, pydantic_monty.ObjectMetadata)
-
-
-def test_structured_print_literal_has_default_metadata() -> None:
-    """Literal args have DEFAULT metadata (empty producers, universal consumers, empty tags)."""
-    m = pydantic_monty.Monty('print("txt", 42)')
-    calls, callback = make_annotated_structured_collector()
-    m.run(structured_print_callback=callback)
-    _, objects, _, _ = calls[0]
-    for obj in objects:
-        assert obj.metadata.producers == snapshot(frozenset())
-        assert obj.metadata.consumers is pydantic_monty.UNIVERSAL
-        assert obj.metadata.tags == snapshot(frozenset())
-
-
-def test_structured_print_propagates_input_metadata() -> None:
-    """Metadata from annotated inputs propagates to print callback args."""
-    code = 'print(x)'
-    m = pydantic_monty.Monty(code, inputs=['x'])
-    meta = pydantic_monty.ObjectMetadata(producers=frozenset({'vault'}), tags=frozenset({'secret'}))
-    calls, callback = make_annotated_structured_collector()
-    m.run(
-        inputs={'x': pydantic_monty.AnnotatedValue(42, meta)},
-        structured_print_callback=callback,
-    )
-    _, objects, _, _ = calls[0]
-    assert len(objects) == snapshot(1)
-    assert objects[0].value == snapshot(42)
-    assert objects[0].metadata.producers == snapshot(frozenset({'vault'}))
-    assert objects[0].metadata.tags == snapshot(frozenset({'secret'}))
-
-
-def test_structured_print_merged_metadata() -> None:
-    """When a print arg is computed from multiple tracked values, metadata merges."""
-    code = 'print(a + b)'
-    m = pydantic_monty.Monty(code, inputs=['a', 'b'])
-    meta_a = pydantic_monty.ObjectMetadata(producers=frozenset({'api'}), tags=frozenset({'external'}))
-    meta_b = pydantic_monty.ObjectMetadata(
-        producers=frozenset({'db'}), consumers=frozenset({'admin'}), tags=frozenset({'internal'})
-    )
-    calls, callback = make_annotated_structured_collector()
-    m.run(
-        inputs={
-            'a': pydantic_monty.AnnotatedValue(10, meta_a),
-            'b': pydantic_monty.AnnotatedValue(20, meta_b),
-        },
-        structured_print_callback=callback,
-    )
-    _, objects, _, _ = calls[0]
-    assert objects[0].value == snapshot(30)
-    # producers: union
-    assert objects[0].metadata.producers == snapshot(frozenset({'api', 'db'}))
-    # consumers: intersection (None & {'admin'} = {'admin'})
-    assert objects[0].metadata.consumers == snapshot(frozenset({'admin'}))
-    # tags: union
-    assert objects[0].metadata.tags == snapshot(frozenset({'external', 'internal'}))
-
-
-def test_structured_print_mixed_tracked_and_untracked() -> None:
-    """Mix of tracked and untracked args — each carries its own metadata."""
-    code = 'print(x, "literal")'
-    m = pydantic_monty.Monty(code, inputs=['x'])
-    meta = pydantic_monty.ObjectMetadata(producers=frozenset({'sensor'}))
-    calls, callback = make_annotated_structured_collector()
-    m.run(
-        inputs={'x': pydantic_monty.AnnotatedValue(99, meta)},
-        structured_print_callback=callback,
-    )
-    _, objects, _, _ = calls[0]
-    # First arg carries input metadata
-    assert objects[0].value == snapshot(99)
-    assert objects[0].metadata.producers == snapshot(frozenset({'sensor'}))
-    # Second arg is a literal — default metadata
-    assert objects[1].value == snapshot('literal')
-    assert objects[1].metadata.producers == snapshot(frozenset())

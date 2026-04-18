@@ -24,7 +24,7 @@ use crate::{
     exception_private::{ExcType, RunResult},
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
     types::Module,
     value::Value,
 };
@@ -48,24 +48,24 @@ pub(crate) enum JsonFunctions {
 /// The module exposes `loads`, `dumps`, and `JSONDecodeError`. These are the
 /// most widely used parts of CPython's `json` module and are sufficient for
 /// common data interchange and round-tripping use cases inside the sandbox.
-pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<HeapId> {
     let mut module = Module::new(StaticStrings::Json);
     module.set_attr(
         StaticStrings::Loads,
         Value::ModuleFunction(ModuleFunctions::Json(JsonFunctions::Loads)),
         vm,
-    );
+    )?;
     module.set_attr(
         StaticStrings::Dumps,
         Value::ModuleFunction(ModuleFunctions::Json(JsonFunctions::Dumps)),
         vm,
-    );
+    )?;
     module.set_attr(
         StaticStrings::JsonDecodeError,
         Value::Builtin(Builtins::ExcType(ExcType::JsonDecodeError)),
         vm,
-    );
-    vm.heap.allocate(HeapData::Module(module))
+    )?;
+    Ok(vm.heap.allocate(HeapData::Module(module))?)
 }
 
 /// Dispatches a `json` module function call.

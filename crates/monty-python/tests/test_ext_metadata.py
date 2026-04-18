@@ -180,7 +180,7 @@ def test_resume_with_annotated_return_value():
         producers=frozenset({'api_call'}),
         tags=frozenset({'external'}),
     )
-    result = snap.resume(return_value=pydantic_monty.AnnotatedValue('response', meta))
+    result = snap.resume({'return_value': pydantic_monty.AnnotatedValue('response', meta)})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot('response')
     assert result.metadata is not None
@@ -194,7 +194,7 @@ def test_resume_without_metadata():
     snap = m.start()
     assert isinstance(snap, pydantic_monty.FunctionSnapshot)
 
-    result = snap.resume(return_value='plain_response')
+    result = snap.resume({'return_value': 'plain_response'})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot('plain_response')
     assert result.metadata is None
@@ -536,7 +536,7 @@ def test_container_metadata_on_resume_propagates_through_indexing():
     container_meta = pydantic_monty.ObjectMetadata(
         tags=frozenset({'__non_executable'}),
     )
-    result = snap.resume(return_value=pydantic_monty.AnnotatedValue(['item_a', 'item_b'], container_meta))
+    result = snap.resume({'return_value': pydantic_monty.AnnotatedValue(['item_a', 'item_b'], container_meta)})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot('item_a')
     assert result.metadata is not None
@@ -573,7 +573,7 @@ def test_container_metadata_on_resume_propagates_through_iteration():
     container_meta = pydantic_monty.ObjectMetadata(
         tags=frozenset({'__non_executable'}),
     )
-    result = snap.resume(return_value=pydantic_monty.AnnotatedValue(['a', 'b'], container_meta))
+    result = snap.resume({'return_value': pydantic_monty.AnnotatedValue(['a', 'b'], container_meta)})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot('a')
     assert result.metadata is not None
@@ -630,7 +630,7 @@ def test_container_metadata_visible_in_structured_print_callback_after_indexing(
     snap = m.start(structured_print_callback=on_print)
     assert isinstance(snap, pydantic_monty.FunctionSnapshot)
 
-    snap.resume(return_value=pydantic_monty.AnnotatedValue(['item_a', 'item_b'], container_meta))
+    snap.resume({'return_value': pydantic_monty.AnnotatedValue(['item_a', 'item_b'], container_meta)})
     assert len(print_log) == snapshot(1)
     assert print_log[0].value == snapshot('item_a')
     assert print_log[0].metadata.tags == snapshot(frozenset({'__non_executable'}))
@@ -652,7 +652,7 @@ def test_container_metadata_visible_in_structured_print_callback_after_iteration
     snap = m.start(structured_print_callback=on_print)
     assert isinstance(snap, pydantic_monty.FunctionSnapshot)
 
-    snap.resume(return_value=pydantic_monty.AnnotatedValue(['a', 'b'], container_meta))
+    snap.resume({'return_value': pydantic_monty.AnnotatedValue(['a', 'b'], container_meta)})
     assert len(print_log) == snapshot(2)
     assert print_log[0].value == snapshot('a')
     assert print_log[0].metadata.tags == snapshot(frozenset({'__non_executable'}))
@@ -690,7 +690,7 @@ def test_next_on_resume_propagates_metadata():
     container_meta = pydantic_monty.ObjectMetadata(
         tags=frozenset({'__non_executable'}),
     )
-    result = snap.resume(return_value=pydantic_monty.AnnotatedValue(['a', 'b'], container_meta))
+    result = snap.resume({'return_value': pydantic_monty.AnnotatedValue(['a', 'b'], container_meta)})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot('a')
     assert result.metadata is not None
@@ -751,7 +751,7 @@ def test_sum_on_resume_propagates_container_metadata():
     container_meta = pydantic_monty.ObjectMetadata(
         tags=frozenset({'__non_executable'}),
     )
-    result = snap.resume(return_value=pydantic_monty.AnnotatedValue([10, 20, 30], container_meta))
+    result = snap.resume({'return_value': pydantic_monty.AnnotatedValue([10, 20, 30], container_meta)})
     assert isinstance(result, pydantic_monty.MontyComplete)
     assert result.output == snapshot(60)
     assert result.metadata is not None
@@ -789,7 +789,7 @@ def test_enumerate_propagates_metadata_to_unpacked_value():
     snap = m.start(structured_print_callback=on_print)
     assert isinstance(snap, pydantic_monty.FunctionSnapshot)
 
-    snap.resume(return_value=pydantic_monty.AnnotatedValue(['a', 'b'], container_meta))
+    snap.resume({'return_value': pydantic_monty.AnnotatedValue(['a', 'b'], container_meta)})
     assert len(print_log) == snapshot(2)
     assert print_log[0].value == snapshot('a')
     assert print_log[0].metadata.tags == snapshot(frozenset({'__non_executable'}))
@@ -815,7 +815,7 @@ def test_enumerate_index_has_no_metadata():
     snap = m.start(structured_print_callback=on_print)
     assert isinstance(snap, pydantic_monty.FunctionSnapshot)
 
-    snap.resume(return_value=pydantic_monty.AnnotatedValue(['a', 'b'], container_meta))
+    snap.resume({'return_value': pydantic_monty.AnnotatedValue(['a', 'b'], container_meta)})
     assert len(print_log) == snapshot(2)
     assert print_log[0].value == snapshot(0)
     assert print_log[0].metadata.tags == snapshot(frozenset())

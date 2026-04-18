@@ -56,13 +56,31 @@ impl Module {
     ///
     /// The attribute name must be pre-interned during the prepare phase.
     ///
+    /// Returns `Err` if the heap allocation needed to grow the dictionary fails
+    /// (e.g., when a resource limit such as `max_memory` is exceeded). The error
+    /// is always a `MemoryError` / `ResourceError` variant — `InternString` keys
+    /// are always hashable, so hashing cannot fail.
+    ///
     /// # Panics
     ///
     /// Panics if the attribute name string has not been pre-interned.
-    pub fn set_attr(&mut self, name: impl Into<StringId>, value: Value, vm: &mut VM<'_, '_, impl ResourceTracker>) {
+    pub fn set_attr(
+        &mut self,
+        name: impl Into<StringId>,
+        value: Value,
+        vm: &mut VM<'_, '_, impl ResourceTracker>,
+    ) -> RunResult<()> {
         let key = Value::InternString(name.into());
-        // Unwrap is safe because InternString keys are always hashable
-        self.attrs.set(key, value, vm).unwrap();
+        // `InternString` keys are always hashable; the only possible error here
+        // is an allocation failure inside `Dict::set` (e.g. memory-limit exceeded).
+        let previous = self.attrs.set(key, value, vm)?;
+        // Module attributes are only assigned once during `create_module`, so in
+        // practice `previous` is always `None` — but drop defensively to avoid
+        // leaking refcounts if a caller ever re-assigns an attribute.
+        if let Some(old) = previous {
+            old.drop_with_heap(vm);
+        }
+        Ok(())
     }
 
     /// Returns whether this module has any heap references in its attributes.

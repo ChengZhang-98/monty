@@ -13,7 +13,7 @@ use crate::{
     exception_private::RunResult,
     heap::HeapId,
     intern::{StaticStrings, StringId},
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
 };
 
 pub(crate) mod asyncio;
@@ -74,7 +74,7 @@ impl StandardLib {
     /// # Panics
     ///
     /// Panics if the required strings have not been pre-interned during prepare phase.
-    pub fn create(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+    pub fn create(self, vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<HeapId> {
         match self {
             Self::Sys => sys::create_module(vm),
             Self::Typing => typing::create_module(vm),
