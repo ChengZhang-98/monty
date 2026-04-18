@@ -24,7 +24,7 @@ use pyo3_async_runtimes::tokio::future_into_py;
 
 use crate::{
     async_dispatch::{await_run_transition, dispatch_loop_run},
-    convert::{get_docstring, monty_to_py, py_to_monty},
+    convert::{get_docstring, monty_to_py, py_to_monty_value},
     dataclass::DcRegistry,
     exceptions::{MontyError, MontyTypingError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
@@ -458,7 +458,10 @@ impl PyMonty {
             )));
         };
 
-        // Extract values in declaration order, detecting AnnotatedValue for metadata
+        // Extract values in declaration order, detecting AnnotatedValue for metadata.
+        // `py_to_annotated` routes value conversion through `py_to_monty_value` so any
+        // PyErr (e.g. `UnicodeEncodeError` for a lone-surrogate string) surfaces as
+        // `MontyRuntimeError` to the host instead of leaking out as a raw `PyErr`.
         self.input_names
             .iter()
             .map(|name| {
@@ -1604,7 +1607,9 @@ impl PyNameLookupSnapshot {
         let lookup_result = if let Some(kwargs) = kwargs
             && let Some(value) = kwargs.get_item(intern!(py, "value"))?
         {
-            NameLookupResult::Value(py_to_monty(&value, &self.dc_registry)?)
+            NameLookupResult::Value(
+                py_to_monty_value(&value, &self.dc_registry).map_err(|e| MontyError::new_err(py, e))?,
+            )
         } else {
             NameLookupResult::Undefined
         };
@@ -2137,7 +2142,10 @@ fn extract_external_result(
     if dict.len() != 1 {
         Err(PyTypeError::new_err(ARGS_ERROR))
     } else if let Some(rv) = dict.get_item(intern!(py, "return_value"))? {
-        // Return value provided — detect AnnotatedValue for metadata
+        // Return value provided — detect AnnotatedValue for metadata.
+        // `py_to_annotated` routes through `py_to_monty_value`, so PyErr
+        // (e.g. lone-surrogate strings, unconvertible types) surfaces as
+        // `MontyRuntimeError` instead of leaking out as a raw PyErr.
         let annotated = py_to_annotated(&rv, dc_registry)?;
         Ok(annotated.into())
     } else if let Some(exc) = dict.get_item(intern!(py, "exception"))? {
@@ -2319,7 +2327,13 @@ pub(crate) fn call_os_callback_parts(
             if result.is(not_handled) {
                 Ok(on_not_handled())
             } else {
-                Ok(py_to_monty(&result, dc_registry)?.into())
+                // A conversion failure on the callback's return value surfaces
+                // inside Monty execution as `ExtFunctionResult::Error`, matching
+                // how a raised exception from the callback is handled below.
+                match py_to_monty_value(&result, dc_registry) {
+                    Ok(v) => Ok(v.into()),
+                    Err(e) => Ok(ExtFunctionResult::Error(e)),
+                }
             }
         }
         Err(err) => Ok(exc_py_to_monty(py, &err).into()),

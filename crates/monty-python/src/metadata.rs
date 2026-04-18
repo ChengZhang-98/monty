@@ -15,7 +15,7 @@ use pyo3::{
     types::{PyFrozenSet, PyString},
 };
 
-use crate::{convert::py_to_monty, dataclass::DcRegistry};
+use crate::{convert::py_to_monty_value, dataclass::DcRegistry, exceptions::MontyError};
 
 // ---------------------------------------------------------------------------
 // UniversalSet — the UNIVERSAL singleton type
@@ -337,16 +337,24 @@ pub fn py_meta_to_rust(py: Python<'_>, meta: &PyObjectMetadata) -> PyResult<Obje
 /// Converts a Python input value to an `AnnotatedObject`.
 ///
 /// If the value is an `AnnotatedValue`, extracts the inner value and metadata.
-/// Otherwise, converts the value with `py_to_monty` and sets metadata to `None`.
+/// Otherwise, converts the value with `py_to_monty_value` and sets metadata to
+/// `None`.
+///
+/// Routes value conversion through `py_to_monty_value` (rather than raw
+/// `py_to_monty`) so that PyO3 conversion failures — e.g. `UnicodeEncodeError`
+/// for a string containing a lone surrogate — surface as `MontyRuntimeError`
+/// to the host instead of leaking out as a raw `PyErr`. Matches the upstream
+/// input-safety guarantee from PR #356 (`e425e31`).
 pub fn py_to_annotated(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult<::monty::AnnotatedObject> {
     if let Ok(annotated) = obj.extract::<PyRef<'_, PyAnnotatedValue>>() {
         let py = obj.py();
-        let value = py_to_monty(annotated.value.bind(py), dc_registry)?;
+        let inner = annotated.value.bind(py);
+        let value = py_to_monty_value(inner, dc_registry).map_err(|e| MontyError::new_err(py, e))?;
         let meta_ref = annotated.metadata.borrow(py);
         let rust_meta = py_meta_to_rust(py, &meta_ref)?;
         Ok(::monty::AnnotatedObject::new(value, Some(rust_meta)))
     } else {
-        let value = py_to_monty(obj, dc_registry)?;
+        let value = py_to_monty_value(obj, dc_registry).map_err(|e| MontyError::new_err(obj.py(), e))?;
         Ok(::monty::AnnotatedObject::from(value))
     }
 }

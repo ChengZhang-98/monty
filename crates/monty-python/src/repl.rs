@@ -22,7 +22,7 @@ use crate::{
     async_dispatch::{ReplCleanupNotifier, await_repl_transition, dispatch_loop_repl},
     convert::{get_docstring, monty_to_py},
     dataclass::DcRegistry,
-    exceptions::MontyError,
+    exceptions::{MontyError, exc_py_to_monty},
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
     metadata::py_to_annotated,
@@ -1002,10 +1002,18 @@ fn extract_repl_inputs(
     let Some(inputs) = inputs else {
         return Ok(vec![]);
     };
+    // Both the key and the value are untrusted host values, so conversion
+    // failures (e.g. lone surrogates, non-string keys) surface as
+    // `MontyRuntimeError` rather than raw PyErrs.
     inputs
         .iter()
         .map(|(key, value)| {
-            let name = key.extract::<String>()?;
+            let py = key.py();
+            let name = key
+                .extract::<String>()
+                .map_err(|e| MontyError::new_err(py, exc_py_to_monty(py, &e)))?;
+            // py_to_annotated routes through py_to_monty_value internally so PyErr surfaces
+            // as MontyRuntimeError instead of leaking out as a raw PyErr.
             let obj = py_to_annotated(&value, dc_registry)?;
             Ok((name, obj))
         })
