@@ -16,8 +16,8 @@ use crate::{
     exception_private::ExcType,
     exception_public::{MontyException, SourceMap},
     expressions::{
-        Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal, Node, Operator,
-        SequenceItem, UnpackTarget,
+        AssignTarget, Callable, CmpOperator, Comprehension, DictItem, Expr, ExprLoc, Identifier, ImportName, Literal,
+        Node, Operator, SequenceItem, UnpackTarget,
     },
     fstring::{ConversionFlag, FStringPart, FormatSpec},
     intern::{InternerBuilder, StringId},
@@ -298,20 +298,21 @@ impl<'a> Parser<'a> {
                 range,
                 ..
             }) => {
-                // Python chained assignment (`a = b = 1`) is parsed by ruff as
-                // multiple targets; Monty only supports a single target, so we
-                // extract the one element inline here. Inlining avoids building
-                // a `Debug`-formatted error eagerly on every hot assignment.
-                let target = match targets.len() {
-                    1 => targets.pop().expect("len == 1"),
-                    n => {
-                        return Err(ParseError::syntax(
-                            format!("Expected 1 assignment target, got {n}"),
-                            self.convert_range(range),
-                        ));
+                // Ruff represents chained assignments (`a = b = 1`) as a single
+                // `StmtAssign` with multiple targets. For the common single-target
+                // case we produce the existing per-shape nodes so the hot path stays
+                // flat; only chained assignments are lowered into `Node::ChainAssign`.
+                match targets.len() {
+                    0 => Err(ParseError::syntax(
+                        "Assignment with no targets".to_string(),
+                        self.convert_range(range),
+                    )),
+                    1 => {
+                        let target = targets.pop().expect("len == 1");
+                        self.parse_assignment(target, *value)
                     }
-                };
-                self.parse_assignment(target, *value)
+                    _ => self.parse_chained_assignment(targets, *value),
+                }
             }
             Stmt::AugAssign(ast::StmtAugAssign { target, op, value, .. }) => {
                 let op = convert_op(op);
@@ -555,58 +556,114 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `lhs = rhs` -> `lhs, rhs`
-    /// Handles simple assignments (x = value), subscript assignments (dict[key] = value),
-    /// attribute assignments (obj.attr = value), and tuple unpacking (a, b = value)
+    /// `lhs = rhs` — parses a single-target assignment into the appropriate `Node` variant.
+    ///
+    /// Dispatches on the shape of `lhs` by delegating to `parse_assign_target`, then wraps
+    /// the resulting `AssignTarget` together with the parsed RHS into one of the flat
+    /// per-shape node variants (`Assign`/`SubscriptAssign`/`AttrAssign`/`UnpackAssign`).
+    /// Handles simple assignments (`x = value`), subscript assignments (`dict[key] = value`),
+    /// attribute assignments (`obj.attr = value`), and tuple/list unpacking (`a, b = value`).
     fn parse_assignment(&mut self, lhs: AstExpr, rhs: AstExpr) -> Result<ParseNode, ParseError> {
+        // Parse the target first so sub-expression evaluation order (container, index, ...)
+        // stays consistent with per-shape parsing done before the refactor.
+        let target = self.parse_assign_target(lhs)?;
+        let rhs = self.parse_expression(rhs)?;
+        let node = match target {
+            AssignTarget::Name(target) => Node::Assign { target, object: rhs },
+            AssignTarget::Subscript {
+                target,
+                index,
+                target_position,
+            } => Node::SubscriptAssign {
+                target,
+                index,
+                value: rhs,
+                target_position,
+            },
+            AssignTarget::Attr {
+                object,
+                attr,
+                target_position,
+            } => Node::AttrAssign {
+                object,
+                attr,
+                target_position,
+                value: rhs,
+            },
+            AssignTarget::Unpack {
+                targets,
+                targets_position,
+            } => Node::UnpackAssign {
+                targets,
+                targets_position,
+                object: rhs,
+            },
+        };
+        Ok(node)
+    }
+
+    /// Parses a chained assignment like `a = b = c = value` into a `Node::ChainAssign`.
+    ///
+    /// The right-hand side `rhs` is evaluated once, and each entry in `targets` receives
+    /// the resulting value in left-to-right order. Each target may be any valid assignment
+    /// LHS — a name, subscript, attribute, or unpack pattern — mirroring the shapes handled
+    /// by `parse_assignment`.
+    fn parse_chained_assignment(&mut self, targets: Vec<AstExpr>, rhs: AstExpr) -> Result<ParseNode, ParseError> {
+        let parsed_targets = targets
+            .into_iter()
+            .map(|t| self.parse_assign_target(t))
+            .collect::<Result<Vec<_>, _>>()?;
+        let object = self.parse_expression(rhs)?;
+        Ok(Node::ChainAssign {
+            targets: parsed_targets,
+            object,
+        })
+    }
+
+    /// Parses a single assignment target expression into an `AssignTarget`.
+    ///
+    /// Central dispatch for assignment-target shapes, shared by `parse_assignment`
+    /// (for single-target and annotation-driven assignments) and
+    /// `parse_chained_assignment` (for `a = b = value`). Keeping shape dispatch in one
+    /// place means adding a new target form only requires updating this function and
+    /// its downstream consumers (prepare and compiler).
+    fn parse_assign_target(&mut self, lhs: AstExpr) -> Result<AssignTarget, ParseError> {
         match lhs {
-            // Subscript assignment like dict[key] = value
             AstExpr::Subscript(ast::ExprSubscript {
                 value, slice, range, ..
-            }) => Ok(Node::SubscriptAssign {
+            }) => Ok(AssignTarget::Subscript {
                 target: self.parse_expression(*value)?,
                 index: self.parse_expression(*slice)?,
-                value: self.parse_expression(rhs)?,
                 target_position: self.convert_range(range),
             }),
-            // Attribute assignment like obj.attr = value (supports chained like a.b.c = value)
-            AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(Node::AttrAssign {
+            AstExpr::Attribute(ast::ExprAttribute { value, attr, range, .. }) => Ok(AssignTarget::Attr {
                 object: self.parse_expression(*value)?,
                 attr: EitherStr::Interned(self.interner.intern(attr.id())),
                 target_position: self.convert_range(range),
-                value: self.parse_expression(rhs)?,
             }),
-            // Tuple unpacking like a, b = value or (a, b), c = nested
             AstExpr::Tuple(ast::ExprTuple { elts, range, .. }) => {
                 let targets_position = self.convert_range(range);
                 let targets = elts
                     .into_iter()
-                    .map(|e| self.parse_unpack_target(e)) // Use parse_unpack_target for recursion
+                    .map(|e| self.parse_unpack_target(e))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(Node::UnpackAssign {
+                Ok(AssignTarget::Unpack {
                     targets,
                     targets_position,
-                    object: self.parse_expression(rhs)?,
                 })
             }
-            // List unpacking like [a, b] = value or [a, *rest] = value
             AstExpr::List(ast::ExprList { elts, range, .. }) => {
                 let targets_position = self.convert_range(range);
                 let targets = elts
                     .into_iter()
                     .map(|e| self.parse_unpack_target(e))
                     .collect::<Result<Vec<_>, _>>()?;
-                Ok(Node::UnpackAssign {
+                Ok(AssignTarget::Unpack {
                     targets,
                     targets_position,
-                    object: self.parse_expression(rhs)?,
                 })
             }
-            // Simple identifier assignment like x = value
-            _ => Ok(Node::Assign {
-                target: self.parse_identifier(lhs)?,
-                object: self.parse_expression(rhs)?,
-            }),
+            other => Ok(AssignTarget::Name(self.parse_identifier(other)?)),
         }
     }
 
