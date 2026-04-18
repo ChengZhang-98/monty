@@ -9,32 +9,35 @@
 
 use crate::{
     bytecode::VM,
+    exception_private::RunResult,
     heap::{HeapData, HeapId},
     intern::StaticStrings,
-    resource::{ResourceError, ResourceTracker},
+    resource::ResourceTracker,
     types::{Module, NamedTuple},
     value::{Marker, Value},
 };
 
 /// Creates the `sys` module and allocates it on the heap.
 ///
-/// Returns a HeapId pointing to the newly allocated module.
+/// Returns a HeapId pointing to the newly allocated module. Returns `Err` when
+/// a heap allocation fails (e.g., the `max_memory` limit is exceeded while
+/// populating the module's attribute dict).
 ///
 /// # Panics
 ///
 /// Panics if the required strings have not been pre-interned during prepare phase.
-pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId, ResourceError> {
+pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> RunResult<HeapId> {
     let mut module = Module::new(StaticStrings::Sys);
 
     // sys.platform
-    module.set_attr(StaticStrings::Platform, StaticStrings::Monty.into(), vm);
+    module.set_attr(StaticStrings::Platform, StaticStrings::Monty.into(), vm)?;
 
     // sys.stdout / sys.stderr - markers for standard output/error
-    module.set_attr(StaticStrings::Stdout, Value::Marker(Marker(StaticStrings::Stdout)), vm);
-    module.set_attr(StaticStrings::Stderr, Value::Marker(Marker(StaticStrings::Stderr)), vm);
+    module.set_attr(StaticStrings::Stdout, Value::Marker(Marker(StaticStrings::Stdout)), vm)?;
+    module.set_attr(StaticStrings::Stderr, Value::Marker(Marker(StaticStrings::Stderr)), vm)?;
 
     // sys.version
-    module.set_attr(StaticStrings::Version, StaticStrings::MontyVersionString.into(), vm);
+    module.set_attr(StaticStrings::Version, StaticStrings::MontyVersionString.into(), vm)?;
     // sys.version_info - named tuple (major=3, minor=14, micro=0, releaselevel='final', serial=0)
     let version_info = NamedTuple::new(
         StaticStrings::SysVersionInfo,
@@ -54,7 +57,7 @@ pub fn create_module(vm: &mut VM<'_, '_, impl ResourceTracker>) -> Result<HeapId
         ],
     );
     let version_info_id = vm.heap.allocate(HeapData::NamedTuple(version_info))?;
-    module.set_attr(StaticStrings::VersionInfo, Value::Ref(version_info_id), vm);
+    module.set_attr(StaticStrings::VersionInfo, Value::Ref(version_info_id), vm)?;
 
-    vm.heap.allocate(HeapData::Module(module))
+    Ok(vm.heap.allocate(HeapData::Module(module))?)
 }

@@ -170,7 +170,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
                 this.globals = globals;
                 this.meta_globals = meta_globals;
                 this.metadata_store = metadata_store;
-                vm.cleanup();
                 return Err(error);
             }
 
@@ -185,7 +184,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
                 this.globals = globals;
                 this.meta_globals = meta_globals;
                 this.metadata_store = metadata_store;
-                vm.cleanup();
                 None
             };
             Ok((converted, vm_state))
@@ -243,7 +241,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
                 self.globals = globals;
                 self.meta_globals = meta_globals;
                 self.metadata_store = metadata_store;
-                vm.cleanup();
                 return Err(e);
             }
 
@@ -254,7 +251,6 @@ impl<T: ResourceTracker> MontyRepl<T> {
             self.globals = globals;
             self.meta_globals = meta_globals;
             self.metadata_store = metadata_store;
-            vm.cleanup();
             Ok(result)
         })?;
 
@@ -612,7 +608,6 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
                                 repl.meta_globals = mg;
                                 repl.metadata_store = ms;
                             }
-                            vm.cleanup();
                             return Err(MontyException::runtime_error(format!(
                                 "invalid name lookup result: {e}"
                             )));
@@ -652,7 +647,6 @@ impl<T: ResourceTracker> ReplNameLookup<T> {
                     repl.meta_globals = mg;
                     repl.metadata_store = ms;
                 }
-                vm.cleanup();
                 None
             };
             Ok((converted, vm_state))
@@ -746,7 +740,6 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
                     repl.meta_globals = mg;
                     repl.metadata_store = ms;
                 }
-                vm.cleanup();
                 return Err(MontyException::runtime_error(format!(
                     "unknown call_id {call_id}, expected one of: {pending_call_ids:?}"
                 )));
@@ -762,7 +755,6 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
                                 repl.meta_globals = mg;
                                 repl.metadata_store = ms;
                             }
-                            vm.cleanup();
                             return Err(MontyException::runtime_error(format!(
                                 "Invalid return type for call {call_id}: {e}"
                             )));
@@ -783,7 +775,6 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
                     repl.meta_globals = mg;
                     repl.metadata_store = ms;
                 }
-                vm.cleanup();
                 return Err(error.into_python_exception(&executor.interns, &executor.code));
             }
 
@@ -798,7 +789,6 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
                         repl.meta_globals = mg;
                         repl.metadata_store = ms;
                     }
-                    vm.cleanup();
                     return Err(e.into_python_exception(&executor.interns, &executor.code));
                 }
             };
@@ -825,7 +815,6 @@ impl<T: ResourceTracker> ReplResolveFutures<T> {
                     repl.meta_globals = mg;
                     repl.metadata_store = ms;
                 }
-                vm.cleanup();
                 None
             };
             Ok((converted, vm_state))
@@ -970,7 +959,6 @@ impl<T: ResourceTracker> ReplSnapshot<T> {
                 repl.globals = globals;
                 repl.meta_globals = meta_globals;
                 repl.metadata_store = metadata_store;
-                vm.cleanup();
                 None
             };
             (converted, vm_state)

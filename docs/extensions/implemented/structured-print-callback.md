@@ -221,3 +221,27 @@ not present in `builtins` (e.g. `Dataclass`, `DateTime`, `JsonValue`).
 - The `load_snapshot` and `load_repl_snapshot` functions also accept
   `print_callback` but don't yet support `structured_print_callback`. This
   could be added if snapshot serialization + structured output is needed.
+
+## 2026-04-17: Internal refactor (no API change)
+
+During the upstream merge (see `docs/extensions/sync-fork/2026-04-17-merge-notes.md`),
+the internal dispatch pipeline was unified with upstream's new `PrintTarget`
+enum:
+
+- `PrintTarget` gained a `StructuredCallback { callback, dc_registry }`
+  variant. There is no longer a separate `StructuredCallbackMarker` object
+  handed to users — the `structured_print_callback` parameter is now passed
+  alongside `print_callback` and `PrintTarget::from_py_args` decides which
+  variant to build (erroring with `ValueError` if both are set).
+- `CallbackStringPrint`, `CallbackStructuredPrint`, `StructuredCallbackMarker`,
+  `wrap_structured_callback`, `unwrap_structured_callback`,
+  `resolve_print_callback`, and `make_print_writer_from_callback` were deleted.
+  `CallbackStructuredPrint` was moved into `print_target.rs` as the writer
+  implementation for the new variant.
+
+User-facing API is unchanged — every method that accepted
+`structured_print_callback` still does, with the same semantics. The marker
+bug described in "Known Issues (Fixed)" is no longer reachable: the variant
+split is structural inside `PrintTarget`, so snapshot resume paths that
+rebuild the writer pick up the `StructuredCallback` arm directly instead of
+having to re-detect the wrapped marker.
