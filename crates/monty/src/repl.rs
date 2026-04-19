@@ -307,7 +307,19 @@ impl<T: ResourceTracker> MontyRepl<T> {
         };
 
         HeapReader::with(&mut self.heap, |heap| {
-            let vm = &mut VM::new(mem::take(&mut self.globals), heap, &self.interns, print.reborrow());
+            // Use new_with_metadata so the persistent meta_globals and metadata_store
+            // flow into the VM. Without this, the VM starts with a blank metadata
+            // store and take_globals_with_meta below would overwrite self.meta_globals
+            // / self.metadata_store with empty collections, invalidating every
+            // MetadataId previously attached to a global.
+            let vm = &mut VM::new_with_metadata(
+                mem::take(&mut self.globals),
+                mem::take(&mut self.meta_globals),
+                mem::take(&mut self.metadata_store),
+                heap,
+                &self.interns,
+                print.reborrow(),
+            );
 
             let callable = vm.globals[slot_idx.index()].clone_with_heap(vm);
             defer_drop!(callable, vm);

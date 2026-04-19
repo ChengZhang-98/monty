@@ -55,17 +55,32 @@ Two conflicts:
 2. `call_function` implementation (PR #271) — upstream uses `take_globals()`
    which only exists under `#[cfg(feature = "ref-count-return")]`.
    Tiny-beaver has `take_globals_with_meta()` that also returns the parallel
-   `meta_globals` and `metadata_store`. Resolution:
+   `meta_globals` and `metadata_store`. Resolution: build the VM via
+   `VM::new_with_metadata` so the REPL's persistent metadata state flows
+   in, then drain it back out through `take_globals_with_meta()`:
 
    ```rust
+   let vm = &mut VM::new_with_metadata(
+       mem::take(&mut self.globals),
+       mem::take(&mut self.meta_globals),
+       mem::take(&mut self.metadata_store),
+       heap,
+       &self.interns,
+       print.reborrow(),
+   );
+   // ... evaluate ...
    let (g, mg, ms) = vm.take_globals_with_meta();
    self.globals = g;
    self.meta_globals = mg;
    self.metadata_store = ms;
    ```
 
-   This keeps metadata and the metadata store in sync across calls —
-   required for the extension's propagation invariants.
+   Both halves are required. An earlier iteration used `VM::new` on the
+   construction side — that seeds a fresh empty `MetadataStore` and
+   `meta_globals = vec![DEFAULT; n]`, so the subsequent
+   `take_globals_with_meta()` drained those empties back into the REPL and
+   invalidated every `MetadataId` attached to a prior global. Regression
+   test: `call_function_preserves_global_metadata` in `tests/repl.rs`.
 
 ### `crates/monty-python/src/repl.rs`
 

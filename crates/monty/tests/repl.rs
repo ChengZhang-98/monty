@@ -896,3 +896,35 @@ fn call_builtin_via_session() {
         .unwrap();
     assert_eq!(result, MontyObject::Int(2));
 }
+
+#[test]
+fn call_function_preserves_global_metadata() {
+    // Regression: MontyRepl::call_function must not wipe the REPL's
+    // meta_globals / metadata_store. Previously it built the VM via
+    // VM::new (which seeds an empty metadata store) and then drained
+    // that empty store back into the REPL, invalidating every
+    // MetadataId attached to a prior global.
+    let mut repl = MontyRepl::new("repl.py", NoLimitTracker);
+
+    // Define a function that the call_function call will invoke.
+    repl.feed_run("def double(v): return v * 2", vec![], PrintWriter::Disabled)
+        .unwrap();
+
+    // Seed an annotated global `x`.
+    let input_meta = meta(Some(&["vault"]), None, Some(&["secret"]));
+    let input = AnnotatedObject::new(MontyObject::Int(10), Some(input_meta.clone()));
+    repl.feed_run("x = x", vec![("x".to_string(), input)], PrintWriter::Disabled)
+        .unwrap();
+
+    // Invoke call_function — this is the operation under test.
+    let result = repl
+        .call_function("double", vec![MontyObject::Int(5)], PrintWriter::Disabled)
+        .unwrap();
+    assert_eq!(result, MontyObject::Int(10));
+
+    // After call_function, metadata on `x` must still be intact.
+    let progress = repl.feed_start("x", vec![], PrintWriter::Disabled).unwrap();
+    let (_repl, out) = progress.into_complete().expect("expected completion");
+    assert_eq!(out.value, MontyObject::Int(10));
+    assert_eq!(out.metadata, Some(input_meta));
+}
