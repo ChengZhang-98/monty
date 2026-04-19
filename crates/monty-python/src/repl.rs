@@ -14,7 +14,7 @@ use pyo3::{
     exceptions::{PyRuntimeError, PyTypeError, PyValueError},
     prelude::*,
     sync::PyOnceLock,
-    types::{PyBytes, PyDict, PyList, PyModule, PyType},
+    types::{PyBytes, PyDict, PyList, PyModule, PyString, PyType},
 };
 use pyo3_async_runtimes::tokio::future_into_py;
 
@@ -26,7 +26,7 @@ use crate::{
     external::{ExternalFunctionRegistry, dispatch_method_call},
     limits::{CancellationFlag, FutureCancellationGuard, PySignalTracker, extract_limits},
     metadata::py_to_annotated,
-    monty_cls::{EitherProgress, call_os_callback_parts, py_type_check},
+    monty_cls::{EitherProgress, call_os_callback_parts, extract_source_code, py_type_check},
     mount::OsHandler,
     print_target::PrintTarget,
 };
@@ -145,8 +145,9 @@ impl PyMontyRepl {
     /// This does not use the accumulated code from previous `feed_run` calls —
     /// use `prefix_code` to provide any needed declarations.
     #[pyo3(signature = (code, prefix_code=None))]
-    fn type_check(&self, py: Python<'_>, code: &str, prefix_code: Option<&str>) -> PyResult<()> {
-        py_type_check(py, code, &self.script_name, prefix_code, "type_stubs.pyi")
+    fn type_check(&self, py: Python<'_>, code: &Bound<'_, PyString>, prefix_code: Option<&str>) -> PyResult<()> {
+        let code = extract_source_code(py, code)?;
+        py_type_check(py, &code, &self.script_name, prefix_code, "type_stubs.pyi")
     }
 
     /// Feeds and executes a single incremental REPL snippet.
@@ -162,7 +163,7 @@ impl PyMontyRepl {
     fn feed_run<'py>(
         &self,
         py: Python<'py>,
-        code: &str,
+        code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
         external_functions: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
@@ -171,6 +172,8 @@ impl PyMontyRepl {
         os: Option<&Bound<'_, PyAny>>,
         skip_type_check: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
+        let code_owned = extract_source_code(py, code)?;
+        let code = code_owned.as_str();
         self.run_type_check_if_enabled(py, code, skip_type_check)?;
         let input_values = extract_repl_inputs(inputs, &self.dc_registry)?;
         let print_target = PrintTarget::from_py_args(print_callback, structured_print_callback, &self.dc_registry)?;
@@ -239,7 +242,7 @@ impl PyMontyRepl {
     fn feed_start<'py>(
         slf: &Bound<'py, Self>,
         py: Python<'py>,
-        code: &str,
+        code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
         structured_print_callback: Option<&Bound<'_, PyAny>>,
@@ -248,7 +251,8 @@ impl PyMontyRepl {
         skip_type_check: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let this = slf.get();
-        this.run_type_check_if_enabled(py, code, skip_type_check)?;
+        let code = extract_source_code(py, code)?;
+        this.run_type_check_if_enabled(py, &code, skip_type_check)?;
         let input_values = extract_repl_inputs(inputs, &this.dc_registry)?;
         let print_target = PrintTarget::from_py_args(print_callback, structured_print_callback, &this.dc_registry)?;
 
@@ -258,11 +262,10 @@ impl PyMontyRepl {
 
         let repl = this.take_repl()?;
         if !skip_type_check {
-            this.set_pending_type_check(code);
+            this.set_pending_type_check(&code);
         }
         let repl_owner: Py<Self> = slf.clone().unbind();
 
-        let code_owned = code.to_owned();
         let inputs_owned = input_values;
         let dc_registry = this.dc_registry.clone_ref(py);
         let script_name = this.script_name.clone();
@@ -271,8 +274,8 @@ impl PyMontyRepl {
         // collector lock is only held during the VM call.
         macro_rules! feed_start_impl {
             ($repl:expr, $variant:ident) => {{
-                let result = py
-                    .detach(|| print_target.with_writer(|writer| $repl.feed_start(&code_owned, inputs_owned, writer)));
+                let result =
+                    py.detach(|| print_target.with_writer(|writer| $repl.feed_start(&code, inputs_owned, writer)));
                 let progress = match result {
                     Ok(p) => p,
                     Err(e) => {
@@ -332,7 +335,7 @@ impl PyMontyRepl {
     fn feed_run_async<'py>(
         slf: &Bound<'py, Self>,
         py: Python<'py>,
-        code: &str,
+        code: &Bound<'_, PyString>,
         inputs: Option<&Bound<'_, PyDict>>,
         external_functions: Option<&Bound<'_, PyDict>>,
         print_callback: Option<&Bound<'_, PyAny>>,
@@ -349,22 +352,22 @@ impl PyMontyRepl {
         }
 
         let this = slf.get();
-        this.run_type_check_if_enabled(py, code, skip_type_check)?;
+        let code = extract_source_code(py, code)?;
+        this.run_type_check_if_enabled(py, &code, skip_type_check)?;
         if !skip_type_check {
-            this.set_pending_type_check(code);
+            this.set_pending_type_check(&code);
         }
         let input_values = extract_repl_inputs(inputs, &this.dc_registry)?;
         let dc_registry = this.dc_registry.clone_ref(py);
         let ext_fns = external_functions.map(|d| d.clone().unbind());
         let repl_owner: Py<Self> = slf.clone().unbind();
-        let code_owned = code.to_owned();
         let print_target = PrintTarget::from_py_args(print_callback, structured_print_callback, &this.dc_registry)?;
 
         PyReplAsyncAwaitable::new_py_any(
             py,
             ReplAsyncStart {
                 repl_owner,
-                code: code_owned,
+                code,
                 input_values,
                 external_functions: ext_fns,
                 os,
@@ -860,12 +863,10 @@ impl PyMontyRepl {
             }};
         }
 
-        let code_owned = code.to_owned();
-        let mut progress =
-            match py.detach(|| print_target.with_writer(|w| repl.feed_start(&code_owned, input_values, w))) {
-                Ok(p) => p,
-                Err(e) => restore_err!(e),
-            };
+        let mut progress = match py.detach(|| print_target.with_writer(|w| repl.feed_start(code, input_values, w))) {
+            Ok(p) => p,
+            Err(e) => restore_err!(e),
+        };
 
         loop {
             match progress {

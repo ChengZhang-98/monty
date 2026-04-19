@@ -189,6 +189,7 @@ pub(crate) struct Executor {
     /// Used by:
     /// - ref-count tests for looking up variables by name
     /// - REPL incremental compilation to preserve stable global slot IDs across snippets
+    /// - [`MontyRepl::call_function`](crate::MontyRepl) to look up functions by name
     pub(crate) name_map: AHashMap<String, NamespaceId>,
     /// Compiled bytecode for the module.
     pub(crate) module_code: Code,
@@ -329,7 +330,9 @@ impl Executor {
             self.heap_capacity.store(heap.size(), Ordering::Relaxed);
         }
 
-        result.map_err(|e| e.into_python_exception(&self.interns, &self.code))
+        // Non-REPL execution has exactly one source, so every frame's filename
+        // resolves to the same `self.code`.
+        result.map_err(|e| e.into_python_exception(&self.interns, |_| Some(self.code.as_str())))
     }
 
     /// Runs module code on an already-configured VM to completion.
@@ -425,9 +428,10 @@ impl Executor {
             let unique_refs = unique_ids.len();
             let heap_count = vm.heap.entry_count();
 
-            // Convert return value while VM is still alive (needs access to interns)
+            // Convert return value while VM is still alive (needs access to interns).
+            // Non-REPL: single source, so every frame resolves to `self.code`.
             let py_object = frame_exit_to_object(frame_exit_result, &mut vm)
-                .map_err(|e| e.into_python_exception(&self.interns, &self.code))?;
+                .map_err(|e| e.into_python_exception(&self.interns, |_| Some(self.code.as_str())))?;
 
             // Drop globals with proper ref counting
             for value in globals {

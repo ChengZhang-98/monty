@@ -178,6 +178,16 @@ def test_syntax_error():
         repl.feed_run('def')
 
 
+def test_syntax_error_lone_surrogate():
+    # Lone surrogates cannot be encoded as UTF-8, so they are not valid Python
+    # source. feed_run reports this as MontySyntaxError rather than letting
+    # PyO3's raw UnicodeEncodeError bubble out.
+    repl = pydantic_monty.MontyRepl()
+    with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
+        repl.feed_run('\ud83d')
+    assert str(exc_info.value) == snapshot('source code is not valid UTF-8 (contains lone surrogates)')
+
+
 def test_runtime_error_preserves_state():
     """A runtime error should not destroy previously defined state."""
     repl = pydantic_monty.MontyRepl()
@@ -237,6 +247,42 @@ def test_multiple_errors_dont_corrupt_state():
     with pytest.raises(pydantic_monty.MontyRuntimeError):
         repl.feed_run('undefined_name')
     assert repl.feed_run('x') == snapshot(2)
+
+
+def test_cross_snippet_traceback_resolves_against_defining_snippet():
+    # REPL tracebacks must resolve each frame against the source text of the
+    # snippet that actually produced the CodeRange byte offsets — not the
+    # snippet that happens to be executing when the exception fires. The
+    # function below is defined in snippet 0 (`<python-input-0>`), called
+    # from snippet 1 (`<python-input-1>`); the raise-site frame needs to
+    # point back at snippet 0's source for line/column/source_line.
+    repl = pydantic_monty.MontyRepl()
+    repl.feed_run("def f():\n    raise ValueError('boom')")
+    with pytest.raises(pydantic_monty.MontyRuntimeError) as exc_info:
+        repl.feed_run('f()')
+    frames = exc_info.value.traceback()
+    assert [f.dict() for f in frames] == snapshot(
+        [
+            {
+                'filename': '<python-input-1>',
+                'line': 1,
+                'column': 1,
+                'end_line': 1,
+                'end_column': 4,
+                'function_name': '<module>',
+                'source_line': 'f()',
+            },
+            {
+                'filename': '<python-input-0>',
+                'line': 2,
+                'column': 11,
+                'end_line': 2,
+                'end_column': 29,
+                'function_name': 'f',
+                'source_line': "    raise ValueError('boom')",
+            },
+        ]
+    )
 
 
 # === Print callback ===
