@@ -8,7 +8,7 @@ use ::monty::{AnnotatedObject, MontyDate, MontyDateTime, MontyObject, MontyTimeD
 use monty::MontyException;
 use num_bigint::BigInt;
 use pyo3::{
-    exceptions::{PyBaseException, PyTypeError},
+    exceptions::{PyBaseException, PyRuntimeError, PyTypeError},
     intern,
     prelude::*,
     sync::PyOnceLock,
@@ -25,6 +25,8 @@ use crate::{
     non_serializable::PyNonSerializable,
 };
 
+const MAX_DEPTH: u8 = 200;
+
 /// Like `py_to_monty`, but converts any `PyErr` into a `MontyException`.
 ///
 /// Use this at every boundary where an untrusted host value flows into Monty
@@ -33,7 +35,7 @@ use crate::{
 /// Python-API returns, or `ExtFunctionResult::Error(e)` for mid-execution
 /// dispatch — so raw PyO3 errors like `UnicodeEncodeError` never escape.
 pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> Result<MontyObject, MontyException> {
-    py_to_monty(obj, dc_registry).map_err(|e| exc_py_to_monty(obj.py(), &e))
+    py_to_monty(obj, dc_registry, 0).map_err(|e| exc_py_to_monty(obj.py(), &e))
 }
 
 /// Converts a Python object to Monty's `MontyObject` representation.
@@ -48,8 +50,11 @@ pub fn py_to_monty_value(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> Re
 /// # Important
 /// Checks `bool` before `int` since `bool` is a subclass of `int` in Python.
 /// Callable check is last since many Python types (classes, etc.) are technically callable.
-pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult<MontyObject> {
-    if obj.is_none() {
+pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry, mut depth: u8) -> PyResult<MontyObject> {
+    depth += 1;
+    if depth > MAX_DEPTH {
+        Err(PyRuntimeError::new_err("Max input depth exceeded"))
+    } else if obj.is_none() {
         Ok(MontyObject::None)
     } else if let Ok(bool) = obj.cast::<PyBool>() {
         // Check bool BEFORE int since bool is a subclass of int in Python
@@ -70,9 +75,12 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
     } else if let Ok(bytes) = obj.cast::<PyBytes>() {
         Ok(MontyObject::Bytes(bytes.extract()?))
     } else if let Ok(list) = obj.cast::<PyList>() {
-        let items: PyResult<Vec<_>> = list
+        // Extension keeps metadata-aware container element types (`Vec<AnnotatedObject>`)
+        // per the merge plan §"input metadata threading" decision; depth is threaded
+        // for the upstream input-safety guarantee from PR #360.
+        let items: PyResult<Vec<AnnotatedObject>> = list
             .iter()
-            .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+            .map(|item| py_to_monty(&item, dc_registry, depth).map(AnnotatedObject::from))
             .collect();
         Ok(MontyObject::List(items?))
     } else if let Ok(tuple) = obj.cast::<PyTuple>() {
@@ -96,9 +104,9 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
             // Extract field names as strings
             let field_names: PyResult<Vec<String>> = fields_tuple.iter().map(|f| f.extract::<String>()).collect();
             // Extract values
-            let values: PyResult<Vec<_>> = tuple
+            let values: PyResult<Vec<AnnotatedObject>> = tuple
                 .iter()
-                .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+                .map(|item| py_to_monty(&item, dc_registry, depth).map(AnnotatedObject::from))
                 .collect();
             return Ok(MontyObject::NamedTuple {
                 type_name,
@@ -107,9 +115,9 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
             });
         }
         // Regular tuple
-        let items: PyResult<Vec<_>> = tuple
+        let items: PyResult<Vec<AnnotatedObject>> = tuple
             .iter()
-            .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+            .map(|item| py_to_monty(&item, dc_registry, depth).map(AnnotatedObject::from))
             .collect();
         Ok(MontyObject::Tuple(items?))
     } else if let Ok(dict) = obj.cast::<PyDict>() {
@@ -117,19 +125,24 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
         // it's probably not worth it right now
         Ok(MontyObject::dict(
             dict.iter()
-                .map(|(k, v)| Ok((py_to_monty(&k, dc_registry)?, py_to_monty(&v, dc_registry)?)))
+                .map(|(k, v)| {
+                    Ok((
+                        py_to_monty(&k, dc_registry, depth)?,
+                        py_to_monty(&v, dc_registry, depth)?,
+                    ))
+                })
                 .collect::<PyResult<Vec<(MontyObject, MontyObject)>>>()?,
         ))
     } else if let Ok(set) = obj.cast::<PySet>() {
-        let items: PyResult<Vec<_>> = set
+        let items: PyResult<Vec<AnnotatedObject>> = set
             .iter()
-            .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+            .map(|item| py_to_monty(&item, dc_registry, depth).map(AnnotatedObject::from))
             .collect();
         Ok(MontyObject::Set(items?))
     } else if let Ok(frozenset) = obj.cast::<PyFrozenSet>() {
-        let items: PyResult<Vec<_>> = frozenset
+        let items: PyResult<Vec<AnnotatedObject>> = frozenset
             .iter()
-            .map(|item| py_to_monty(&item, dc_registry).map(monty::AnnotatedObject::from))
+            .map(|item| py_to_monty(&item, dc_registry, depth).map(AnnotatedObject::from))
             .collect();
         Ok(MontyObject::FrozenSet(items?))
     } else if obj.is(obj.py().Ellipsis()) {
@@ -151,7 +164,7 @@ pub fn py_to_monty(obj: &Bound<'_, PyAny>, dc_registry: &DcRegistry) -> PyResult
     } else if is_dataclass(obj) {
         // Auto-register the dataclass type so it can be reconstructed on output
         dc_registry.insert(&obj.get_type())?;
-        dataclass_to_monty(obj, dc_registry)
+        dataclass_to_monty(obj, dc_registry, depth)
     } else if obj.is_instance(get_pure_posix_path(obj.py())?)? {
         // Handle pathlib.PurePosixPath and thereby pathlib.PosixPath objects
         let path_str: String = obj.str()?.extract()?;
