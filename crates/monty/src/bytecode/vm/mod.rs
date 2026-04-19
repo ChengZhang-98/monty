@@ -1929,19 +1929,23 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
         self.heap.collect_garbage(roots);
     }
 
-    /// Returns the current source position for traceback generation.
+    /// Returns the current source position for traceback generation, or `None`
+    /// when no frames are on the stack (e.g. host-initiated calls via
+    /// [`MontyRepl`](crate::MontyRepl)).
     ///
     /// Uses `instruction_ip` which is set at the start of each instruction in the run loop,
     /// ensuring accurate position tracking even when using cached IP for bytecode fetching.
-    pub(super) fn current_position(&self) -> CodeRange {
-        let frame = self.current_frame();
+    pub(super) fn current_position(&self) -> Option<CodeRange> {
+        let frame = self.frames.last()?;
         // Use instruction_ip which points to the start of the current instruction
         // (set at the beginning of each loop iteration in run())
-        frame
-            .code
-            .location_for_offset(self.instruction_ip)
-            .map(LocationEntry::range)
-            .unwrap_or_default()
+        Some(
+            frame
+                .code
+                .location_for_offset(self.instruction_ip)
+                .map(LocationEntry::range)
+                .unwrap_or_default(),
+        )
     }
 
     // ========================================================================

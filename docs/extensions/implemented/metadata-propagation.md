@@ -727,6 +727,17 @@ If upstream adds new async patterns, ensure:
    `#[serde(default)]` so old snapshots deserialize with `DEFAULT` metadata.
    Test with `make test-ref-count-panic` which exercises the serde path.
 
+7. **New `MontyRepl` entry points that build a VM** — construct via
+   `VM::new_with_metadata(globals, meta_globals, metadata_store, ...)`, not
+   `VM::new(...)`. `VM::new` seeds a fresh empty `MetadataStore` and
+   `meta_globals = vec![DEFAULT; n]`; if the entry point later calls
+   `vm.take_globals_with_meta()` to drain state back into the REPL, those
+   empties overwrite the REPL's persistent metadata and invalidate every
+   `MetadataId` attached to a prior global. `feed_start`, `feed_run`, and
+   `call_function` all follow the `new_with_metadata` pattern — mirror it for
+   any new entry points. Regression coverage:
+   `call_function_preserves_global_metadata` in `tests/repl.rs`.
+
 ### Quick merge verification
 
 After merging upstream changes, run:
