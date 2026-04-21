@@ -7,7 +7,7 @@ use std::{
     mem::{self, ManuallyDrop, discriminant, size_of},
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
-    vec,
+    thread, vec,
 };
 
 use bytemuck::TransparentWrapper;
@@ -922,10 +922,24 @@ impl<T: ResourceTracker> Heap<T> {
     /// Increments the reference count for an existing heap entry.
     ///
     /// # Panics
-    /// Panics if the value ID is invalid or the value has already been freed.
+    /// Panics if the value ID is invalid or the value has already been freed —
+    /// **except** when called during panic unwinding. In that case the heap may
+    /// already be in an inconsistent state from the bug that triggered the first
+    /// panic, so a missing slot is silently ignored to avoid escalating into a
+    /// non-unwinding abort (a second panic inside a destructor terminates the
+    /// process with no chance for pyo3 to convert the first panic into a
+    /// `PanicException`). The refcount book-keeping is lost, but the process was
+    /// going down anyway.
     pub fn inc_ref(&self, id: HeapId) {
-        let value = self.entries.get(id.index());
-        value.refcount.update(|r| r + 1);
+        if thread::panicking() && id.index() >= self.entries.len() {
+            // Corrupt id encountered during unwind — swallow rather than re-panic.
+            return;
+        }
+        if let Some(value) = self.entries.try_get(id.index()) {
+            value.refcount.update(|r| r + 1);
+        } else if !thread::panicking() {
+            panic!("HeapEntries::get - data already freed");
+        }
     }
 
     /// Decrements the reference count and frees the value (plus children) once it hits zero.
@@ -936,22 +950,57 @@ impl<T: ResourceTracker> Heap<T> {
     ///
     /// # Panics
     /// Panics if the value ID is invalid, the value has already been freed, or
-    /// the refcount would reach zero while active `HeapRead` readers exist.
+    /// the refcount would reach zero while active `HeapRead` readers exist —
+    /// **except** when called during panic unwinding. See [`inc_ref`](Self::inc_ref)
+    /// for the rationale: a double panic inside a destructor aborts the process,
+    /// so freed-slot hits during unwind silently short-circuit rather than panic.
     pub fn dec_ref(&mut self, id: HeapId) {
         let mut current_id = id;
         let mut work_stack = Vec::new();
         loop {
+            if thread::panicking() && current_id.index() >= self.entries.len() {
+                // Corrupt id encountered during unwind — skip this subtree rather
+                // than re-panic and abort the process.
+                let Some(next_id) = work_stack.pop() else {
+                    break;
+                };
+                current_id = next_id;
+                continue;
+            }
             let slot = self.entries.get_mut(current_id.index());
-            let entry = slot.as_mut().expect("Heap::dec_ref: object already freed");
+            let entry = match slot.as_mut() {
+                Some(entry) => entry,
+                None if thread::panicking() => {
+                    // Heap is already inconsistent from the original panic;
+                    // abandon cleanup for this subtree and move on.
+                    let Some(next_id) = work_stack.pop() else {
+                        break;
+                    };
+                    current_id = next_id;
+                    continue;
+                }
+                None => panic!("Heap::dec_ref: object already freed"),
+            };
             if entry.refcount.get() > 1 {
                 entry.refcount.update(|r| r - 1);
             } else {
-                assert!(
-                    entry.readers.get() == 0,
-                    "Heap::dec_ref: cannot free HeapId({}) with {} active reader(s)",
-                    current_id.index(),
-                    entry.readers.get(),
-                );
+                if entry.readers.get() != 0 {
+                    if thread::panicking() {
+                        // Leak the entry rather than aborting the process. The original
+                        // panic has already torn down correctness; a second panic here
+                        // (inside a destructor during unwind) would escalate to `abort()`.
+                        let Some(next_id) = work_stack.pop() else {
+                            break;
+                        };
+                        current_id = next_id;
+                        continue;
+                    }
+                    panic!(
+                        "Heap::dec_ref: cannot free HeapId({}) with {} active reader(s)",
+                        current_id.index(),
+                        entry.readers.get(),
+                    );
+                }
                 if let Some(mut value) = slot.take() {
                     // refcount == 1, free the value and add slot to free list for reuse
                     self.entries.free(current_id);
@@ -1665,3 +1714,129 @@ fn py_dec_ref_ids_for_data(data: &mut HeapData, stack: &mut Vec<HeapId>) {
 #[cfg(heap_reader_compile_fail_tests)]
 #[path = "../tests/heap_reader_compile_fail_cases/cases.rs"]
 mod heap_reader_compile_fail_cases;
+
+/// Tests for the panic-during-unwind hardening in [`Heap::inc_ref`] and [`Heap::dec_ref`].
+///
+/// These functions are routinely invoked from `DropWithHeap` implementations. A second
+/// panic fired inside a `Drop` while the thread is already unwinding escalates to
+/// `abort()`, which denies pyo3 the chance to convert the original panic into a
+/// `PanicException`. The tests here simulate that exact shape — a primary panic with a
+/// drop guard that touches a deliberately bad `HeapId` — and verify that the secondary
+/// call short-circuits instead of re-panicking.
+#[cfg(test)]
+mod panic_during_unwind_tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use super::{Heap, HeapData, HeapId};
+    use crate::{NoLimitTracker, types::Str};
+
+    /// Drop guard that calls `Heap::inc_ref` when dropped.
+    ///
+    /// Simulates a destructor that bumps a refcount. The guard is the key piece of
+    /// scaffolding for these tests: if it fires `inc_ref` while the thread is already
+    /// unwinding from a prior panic, a second panic would abort the process rather
+    /// than propagate — so the test relies on the guard in `heap.rs` swallowing
+    /// bad-id errors during unwind.
+    struct IncGuard<'h> {
+        heap: &'h Heap<NoLimitTracker>,
+        id: HeapId,
+    }
+
+    impl Drop for IncGuard<'_> {
+        fn drop(&mut self) {
+            self.heap.inc_ref(self.id);
+        }
+    }
+
+    /// Drop guard that calls `Heap::dec_ref` when dropped.
+    ///
+    /// Mirrors the real-world `DropWithHeap` path where heap references are released
+    /// from a destructor. Same unwind-safety requirement as [`IncGuard`].
+    struct DecGuard<'h> {
+        heap: &'h mut Heap<NoLimitTracker>,
+        id: HeapId,
+    }
+
+    impl Drop for DecGuard<'_> {
+        fn drop(&mut self) {
+            self.heap.dec_ref(self.id);
+        }
+    }
+
+    /// Builds a fresh heap with `NoLimitTracker` (tracker work is irrelevant here).
+    fn fresh_heap() -> Heap<NoLimitTracker> {
+        Heap::new(16, NoLimitTracker)
+    }
+
+    #[test]
+    fn inc_ref_panics_on_bad_id_outside_unwind() {
+        // Baseline: without an active unwind, the usual panic still fires so that
+        // genuine book-keeping bugs remain loud.
+        let heap = fresh_heap();
+        let bad_id = HeapId::from_index(9_999);
+        let result = catch_unwind(AssertUnwindSafe(|| heap.inc_ref(bad_id)));
+        assert!(
+            result.is_err(),
+            "inc_ref must panic on out-of-bounds id when not unwinding"
+        );
+    }
+
+    #[test]
+    fn inc_ref_silent_on_oob_id_during_unwind() {
+        // Simulates a destructor calling inc_ref with a corrupted id while the thread
+        // is already unwinding. Without the guard, a second panic would abort the
+        // process and catch_unwind would never return.
+        let heap = fresh_heap();
+        let bad_id = HeapId::from_index(9_999);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = IncGuard {
+                heap: &heap,
+                id: bad_id,
+            };
+            panic!("primary panic");
+        }));
+        assert!(result.is_err(), "primary panic must propagate cleanly through inc_ref");
+    }
+
+    #[test]
+    fn inc_ref_silent_on_freed_slot_during_unwind() {
+        // Freed-slot path: the slot index is in bounds but already taken. Again,
+        // during unwind this must not re-panic.
+        let mut heap = fresh_heap();
+        let id = heap.allocate(HeapData::Str(Str::new("dead".to_owned()))).unwrap();
+        heap.dec_ref(id); // refcount was 1 → slot freed.
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = IncGuard { heap: &heap, id };
+            panic!("primary panic");
+        }));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn dec_ref_silent_on_oob_id_during_unwind() {
+        let mut heap = fresh_heap();
+        let bad_id = HeapId::from_index(9_999);
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = DecGuard {
+                heap: &mut heap,
+                id: bad_id,
+            };
+            panic!("primary panic");
+        }));
+        assert!(result.is_err(), "primary panic must propagate cleanly through dec_ref");
+    }
+
+    #[test]
+    fn dec_ref_silent_on_freed_slot_during_unwind() {
+        let mut heap = fresh_heap();
+        let id = heap.allocate(HeapData::Str(Str::new("dead".to_owned()))).unwrap();
+        heap.dec_ref(id); // Free the slot up front.
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = DecGuard { heap: &mut heap, id };
+            panic!("primary panic");
+        }));
+        assert!(result.is_err());
+    }
+}
