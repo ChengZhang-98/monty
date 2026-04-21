@@ -31,7 +31,8 @@ use crate::{
     resource::{ResourceError, ResourceTracker},
     types::{
         Type,
-        list::{get_slice_items, repr_sequence_fmt},
+        list::repr_sequence_fmt,
+        slice::{normalize_sequence_index, slice_collect_iterator},
     },
     value::{EitherStr, Value},
 };
@@ -236,11 +237,9 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         if let Value::Ref(key_id) = key
             && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
         {
-            let (start, stop, step) = slice_obj
-                .indices(self.get(vm.heap).items.len())
-                .map_err(|()| ExcType::value_error_slice_step_zero())?;
-            let items = get_slice_items(&self.get(vm.heap).items, start, stop, step, vm.heap)?;
-            return Ok(allocate_tuple(items.into(), vm.heap)?);
+            let items =
+                slice_collect_iterator(vm, slice_obj, self.get(vm.heap).items.iter(), |v| v.clone_with_heap(vm))?;
+            return Ok(allocate_tuple(items, vm.heap)?);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
@@ -399,12 +398,12 @@ fn tuple_index<'h>(
         [] => return Err(ExcType::type_error_at_least("tuple.index", 1, 0)),
         [value] => (value, 0, len),
         [value, start_arg] => {
-            let start = normalize_tuple_index(start_arg.as_int(vm)?, len);
+            let start = normalize_sequence_index(start_arg.as_int(vm)?, len);
             (value, start, len)
         }
         [value, start_arg, end_arg] => {
-            let start = normalize_tuple_index(start_arg.as_int(vm)?, len);
-            let end = normalize_tuple_index(end_arg.as_int(vm)?, len).max(start);
+            let start = normalize_sequence_index(start_arg.as_int(vm)?, len);
+            let end = normalize_sequence_index(end_arg.as_int(vm)?, len).max(start);
             (value, start, end)
         }
         other => return Err(ExcType::type_error_at_most("tuple.index", 3, other.len())),
@@ -445,14 +444,4 @@ fn tuple_count<'h>(
 
     let count_i64 = i64::try_from(count).expect("count exceeds i64::MAX");
     Ok(Value::Int(count_i64))
-}
-
-/// Normalizes a Python-style tuple index to a valid index in range [0, len].
-fn normalize_tuple_index(index: i64, len: usize) -> usize {
-    if index < 0 {
-        let abs_index = usize::try_from(-index).unwrap_or(usize::MAX);
-        len.saturating_sub(abs_index)
-    } else {
-        usize::try_from(index).unwrap_or(len).min(len)
-    }
 }
