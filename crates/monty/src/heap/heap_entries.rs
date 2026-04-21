@@ -110,6 +110,24 @@ impl HeapEntries {
         unsafe { self.get_inner(index) }.expect("HeapEntries::get - data already freed")
     }
 
+    /// Returns a shared reference to the entry at `index`, or `None` if the slot is freed.
+    ///
+    /// Unlike [`get`](Self::get), does not panic on a freed slot. Used by the refcount
+    /// machinery to recover gracefully during panic unwinding — see `Heap::inc_ref` and
+    /// `Heap::dec_ref`, which must not escalate a first panic into a non-unwinding abort
+    /// by panicking a second time inside a destructor.
+    ///
+    /// Still panics on out-of-bounds index, since that indicates a corrupted `HeapId`
+    /// rather than a freed slot.
+    #[inline]
+    #[track_caller]
+    pub fn try_get(&self, index: usize) -> Option<&HeapValue> {
+        // SAFETY: (DH) this call does not expose free slots which could be invalidated
+        // by calls to `.allocate()` — we only use the returned reference to read the
+        // refcount, never to mutate the slot or trigger allocation.
+        unsafe { self.get_inner(index) }
+    }
+
     /// Returns a shared reference to the entry at `index`, or `None` if empty
     ///
     /// # Safety
@@ -517,5 +535,28 @@ mod tests {
             // SAFETY: (DH) - borrow only held for `is_none()` check, no overlap with allocation
             assert!(entries.is_allocated(i), "slot {i} should be occupied");
         }
+    }
+
+    #[test]
+    fn try_get_returns_some_for_live_slot() {
+        // Confirms `try_get` behaves like `get` for a populated slot. This is the
+        // hot path for `Heap::inc_ref` when nothing has gone wrong.
+        let entries = HeapEntries::with_capacity(4);
+        let id = entries.allocate(dummy("live"));
+        let handle = entries.try_get(id.index()).expect("live slot must yield Some");
+        assert!(format!("{handle:?}").contains("Str"));
+    }
+
+    #[test]
+    fn try_get_returns_none_for_freed_slot() {
+        // `try_get` must diverge from `get` here: a freed slot returns `None` rather
+        // than panicking. `Heap::inc_ref` / `Heap::dec_ref` rely on this so that a
+        // stale id encountered during unwind does not escalate into a second panic.
+        let mut entries = HeapEntries::with_capacity(4);
+        let id = entries.allocate(dummy("dead"));
+        *entries.get_mut(id.index()) = None;
+        entries.free(id);
+
+        assert!(entries.try_get(id.index()).is_none());
     }
 }
