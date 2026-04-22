@@ -71,6 +71,20 @@ impl MontyRun {
             .run_ref_counts(inputs.into_iter().map(Into::into).collect())
     }
 
+    /// Executes the code and returns reference count data while using a custom tracker, used for testing only.
+    ///
+    /// Inputs are accepted via `impl Into<AnnotatedObject>` so callers can pass plain `MontyObject`
+    /// values when no metadata is needed, matching the ergonomics of [`Self::run`].
+    #[cfg(feature = "ref-count-return")]
+    pub fn run_ref_counts_with_tracker(
+        &self,
+        inputs: Vec<impl Into<AnnotatedObject>>,
+        resource_tracker: impl ResourceTracker,
+    ) -> Result<RefCountOutput, MontyException> {
+        self.executor
+            .run_ref_counts_with_tracker(inputs.into_iter().map(Into::into).collect(), resource_tracker)
+    }
+
     /// Executes the code to completion assuming not external functions or snapshotting.
     ///
     /// This is marginally faster than running with snapshotting enabled since we don't need
@@ -383,7 +397,17 @@ impl Executor {
 
     /// Executes the code and returns both the result and reference count data, used for testing only.
     ///
-    /// This is used for testing reference counting behavior. Returns:
+    /// Thin wrapper that forwards to [`run_ref_counts_with_tracker`](Self::run_ref_counts_with_tracker)
+    /// with [`NoLimitTracker`] so existing test callers do not have to thread a tracker.
+    #[cfg(feature = "ref-count-return")]
+    fn run_ref_counts(&self, inputs: Vec<AnnotatedObject>) -> Result<RefCountOutput, MontyException> {
+        self.run_ref_counts_with_tracker(inputs, NoLimitTracker)
+    }
+
+    /// Executes the code and returns both the result and reference count data with a custom tracker,
+    /// used for testing only.
+    ///
+    /// This is used for testing reference counting behavior with a custom tracker. Returns:
     /// - The execution result (`Exit`)
     /// - Reference count data as a tuple of:
     ///   - A map from variable names to their reference counts (only for heap-allocated values)
@@ -395,10 +419,14 @@ impl Executor {
     ///
     /// Only available when the `ref-count-return` feature is enabled.
     #[cfg(feature = "ref-count-return")]
-    fn run_ref_counts(&self, inputs: Vec<AnnotatedObject>) -> Result<RefCountOutput, MontyException> {
+    fn run_ref_counts_with_tracker(
+        &self,
+        inputs: Vec<AnnotatedObject>,
+        resource_tracker: impl ResourceTracker,
+    ) -> Result<RefCountOutput, MontyException> {
         use std::collections::HashSet;
 
-        let mut heap = Heap::new(self.namespace_size, NoLimitTracker);
+        let mut heap = Heap::new(self.namespace_size, resource_tracker);
         let globals = self.empty_globals();
 
         HeapReader::with(&mut heap, |heap| {

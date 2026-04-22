@@ -264,8 +264,7 @@ impl<'h> HeapRead<'h, List> {
         let items: Vec<Value> = slice_collect_iterator(vm, slice, self.get(vm.heap).items.iter(), |item| {
             item.clone_with_heap(vm.heap)
         })?;
-        let meta: Vec<MetadataId> =
-            slice_collect_iterator(vm, slice, self.get(vm.heap).item_metadata.iter(), |m| *m)?;
+        let meta: Vec<MetadataId> = slice_collect_iterator(vm, slice, self.get(vm.heap).item_metadata.iter(), |m| *m)?;
         let heap_id = vm.heap.allocate(HeapData::List(List::new_with_metadata(items, meta)))?;
         Ok(Value::Ref(heap_id))
     }
