@@ -88,6 +88,54 @@ fn drive_to_resolve_futures<T: monty::ResourceTracker>(mut progress: RunProgress
     }
 }
 
+// === Test: Suspended task stack stays alive across GC ===
+
+#[test]
+#[cfg(feature = "test-hooks")]
+fn suspended_task_stack_survives_forced_gc() {
+    let code = r"
+import asyncio
+
+async def parked():
+    x = [1, 2, 3]
+    _ = await async_call(7)
+    assert x == [1, 2, 3]
+    return len(x)
+
+async def ready():
+    return 10
+
+await asyncio.gather(parked(), ready())
+";
+    let runner = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    let progress = runner
+        .start(Vec::<MontyObject>::new(), NoLimitTracker, PrintWriter::Stdout)
+        .unwrap();
+
+    let (state, call_ids) = drive_to_resolve_futures(progress);
+    assert_eq!(
+        call_ids.len(),
+        1,
+        "expected the parked task to yield one external future"
+    );
+
+    let state = state.__force_gc_for_tests();
+    let progress = state
+        .resume(
+            vec![(call_ids[0], ExtFunctionResult::Return(MontyObject::Int(99), None))],
+            PrintWriter::Stdout,
+        )
+        .unwrap();
+
+    let result = progress
+        .into_complete()
+        .expect("should complete after resuming parked task");
+    assert_eq!(
+        result.value,
+        MontyObject::List(vec![MontyObject::Int(3).into(), MontyObject::Int(10).into()]),
+    );
+}
+
 // === Test: Resume with all call_ids at once ===
 
 #[test]
