@@ -2,73 +2,71 @@
 //!
 //! `MontyObject` uses derived serde with externally tagged enum format.
 //! This means each variant is wrapped in an object with the variant name as key.
+//!
+//! Serialization tests use [`insta::assert_snapshot!`] with inline snapshots so
+//! the expected JSON stays next to the assertion and can be refreshed with
+//! `cargo insta review` (or `INSTA_UPDATE=always`). Deserialization and
+//! round-trip tests stay on `assert_eq!` because they compare `MontyObject`
+//! structural values, not strings.
 
+use insta::assert_snapshot;
 use monty::{AnnotatedObject, ExcType, MontyObject, MontyRun};
+
+/// Evaluate a Python snippet under Monty and return its final value.
+fn eval(code: &str) -> MontyObject {
+    let ex = MontyRun::new(code.to_owned(), "test.py", vec![]).unwrap();
+    ex.run_no_limits(vec![]).unwrap()
+}
+
+fn to_json(obj: &MontyObject) -> String {
+    serde_json::to_string(obj).unwrap()
+}
 
 // === JSON Serialization Tests ===
 
 #[test]
 fn json_output_primitives() {
     // Primitives are wrapped in their variant names
-    assert_eq!(serde_json::to_string(&MontyObject::Int(42)).unwrap(), r#"{"Int":42}"#);
-    assert_eq!(
-        serde_json::to_string(&MontyObject::Float(1.5)).unwrap(),
-        r#"{"Float":1.5}"#
-    );
-    assert_eq!(
-        serde_json::to_string(&MontyObject::String("hi".into())).unwrap(),
-        r#"{"String":"hi"}"#
-    );
-    assert_eq!(
-        serde_json::to_string(&MontyObject::Bool(true)).unwrap(),
-        r#"{"Bool":true}"#
-    );
-    assert_eq!(serde_json::to_string(&MontyObject::None).unwrap(), r#""None""#);
+    assert_snapshot!(to_json(&MontyObject::Int(42)), @r#"{"Int":42}"#);
+    assert_snapshot!(to_json(&MontyObject::Float(1.5)), @r#"{"Float":1.5}"#);
+    assert_snapshot!(to_json(&MontyObject::String("hi".into())), @r#"{"String":"hi"}"#);
+    assert_snapshot!(to_json(&MontyObject::Bool(true)), @r#"{"Bool":true}"#);
+    assert_snapshot!(to_json(&MontyObject::None), @r#""None""#);
 }
 
 #[test]
 fn json_output_list() {
-    let ex = MontyRun::new("[1, 'two', 3.0]".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
-    // Container elements are now AnnotatedObject with {value, metadata} wrapping
-    assert_eq!(
-        serde_json::to_string(&result).unwrap(),
-        r#"{"List":[{"value":{"Int":1},"metadata":null},{"value":{"String":"two"},"metadata":null},{"value":{"Float":3.0},"metadata":null}]}"#
+    // Container elements are now AnnotatedObject with {value, metadata} wrapping.
+    assert_snapshot!(
+        to_json(&eval("[1, 'two', 3.0]")),
+        @r#"{"List":[{"value":{"Int":1},"metadata":null},{"value":{"String":"two"},"metadata":null},{"value":{"Float":3.0},"metadata":null}]}"#
     );
 }
 
 #[test]
 fn json_output_dict() {
-    let ex = MontyRun::new("{'a': 1, 'b': 2}".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
-    assert_eq!(
-        serde_json::to_string(&result).unwrap(),
-        r#"{"Dict":[[{"value":{"String":"a"},"metadata":null},{"value":{"Int":1},"metadata":null}],[{"value":{"String":"b"},"metadata":null},{"value":{"Int":2},"metadata":null}]]}"#
+    assert_snapshot!(
+        to_json(&eval("{'a': 1, 'b': 2}")),
+        @r#"{"Dict":[[{"value":{"String":"a"},"metadata":null},{"value":{"Int":1},"metadata":null}],[{"value":{"String":"b"},"metadata":null},{"value":{"Int":2},"metadata":null}]]}"#
     );
 }
 
 #[test]
 fn json_output_tuple() {
-    let ex = MontyRun::new("(1, 'two')".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
-    assert_eq!(
-        serde_json::to_string(&result).unwrap(),
-        r#"{"Tuple":[{"value":{"Int":1},"metadata":null},{"value":{"String":"two"},"metadata":null}]}"#
+    assert_snapshot!(
+        to_json(&eval("(1, 'two')")),
+        @r#"{"Tuple":[{"value":{"Int":1},"metadata":null},{"value":{"String":"two"},"metadata":null}]}"#
     );
 }
 
 #[test]
 fn json_output_bytes() {
-    let ex = MontyRun::new("b'hi'".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
-    assert_eq!(serde_json::to_string(&result).unwrap(), r#"{"Bytes":[104,105]}"#);
+    assert_snapshot!(to_json(&eval("b'hi'")), @r#"{"Bytes":[104,105]}"#);
 }
 
 #[test]
 fn json_output_ellipsis() {
-    let ex = MontyRun::new("...".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
-    assert_eq!(serde_json::to_string(&result).unwrap(), r#""Ellipsis""#);
+    assert_snapshot!(to_json(&eval("...")), @r#""Ellipsis""#);
 }
 
 #[test]
@@ -77,10 +75,7 @@ fn json_output_exception() {
         exc_type: ExcType::ValueError,
         arg: Some("test".to_string()),
     };
-    assert_eq!(
-        serde_json::to_string(&obj).unwrap(),
-        r#"{"Exception":{"exc_type":"ValueError","arg":"test"}}"#
-    );
+    assert_snapshot!(to_json(&obj), @r#"{"Exception":{"exc_type":"ValueError","arg":"test"}}"#);
 }
 
 #[test]
@@ -89,32 +84,26 @@ fn json_output_repr() {
         type_name: "function".to_string(),
         repr: "<function foo>".to_string(),
     };
-    assert_eq!(
-        serde_json::to_string(&obj).unwrap(),
-        r#"{"Repr":{"type_name":"function","repr":"<function foo>"}}"#
+    assert_snapshot!(
+        to_json(&obj),
+        @r#"{"Repr":{"type_name":"function","repr":"<function foo>"}}"#
     );
 }
 
 #[test]
 fn json_output_cycle_list() {
-    // Test JSON serialization of cyclic list
-    let ex = MontyRun::new("a = []; a.append(a); a".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
-    // The cyclic reference becomes MontyObject::Cycle, wrapped in AnnotatedObject
-    assert_eq!(
-        serde_json::to_string(&result).unwrap(),
-        r#"{"List":[{"value":{"Cycle":[1,"[...]"]},"metadata":null}]}"#
+    // The cyclic reference becomes MontyObject::Cycle, wrapped in AnnotatedObject.
+    assert_snapshot!(
+        to_json(&eval("a = []; a.append(a); a")),
+        @r#"{"List":[{"value":{"Cycle":[1,"[...]"]},"metadata":null}]}"#
     );
 }
 
 #[test]
 fn json_output_cycle_dict() {
-    // Test JSON serialization of cyclic dict
-    let ex = MontyRun::new("d = {}; d['self'] = d; d".to_owned(), "test.py", vec![]).unwrap();
-    let result = ex.run_no_limits(Vec::<monty::MontyObject>::new()).unwrap();
-    assert_eq!(
-        serde_json::to_string(&result).unwrap(),
-        r#"{"Dict":[[{"value":{"String":"self"},"metadata":null},{"value":{"Cycle":[1,"{...}"]},"metadata":null}]]}"#
+    assert_snapshot!(
+        to_json(&eval("d = {}; d['self'] = d; d")),
+        @r#"{"Dict":[[{"value":{"String":"self"},"metadata":null},{"value":{"Cycle":[1,"{...}"]},"metadata":null}]]}"#
     );
 }
 
