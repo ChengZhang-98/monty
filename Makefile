@@ -8,10 +8,6 @@
 .uv: ## Check that uv is installed
 	@uv --version || echo 'Please install uv: https://docs.astral.sh/uv/getting-started/installation/'
 
-.PHONY: .pre-commit
-.pre-commit: ## Check that pre-commit is installed
-	@pre-commit -V || echo 'Please install pre-commit: https://pre-commit.com/'
-
 .PHONY: install-py
 install-py: .uv ## Install python dependencies
 	# --only-dev to avoid building the python package, use make dev-py for that
@@ -22,9 +18,9 @@ install-js: ## Install JS package dependencies
 	cd crates/monty-js && npm install
 
 .PHONY: install
-install: .cargo .pre-commit install-py install-js ## Install the package, dependencies, and pre-commit for local development
+install: .cargo install-py install-js ## Install the package, dependencies, and prek for local development
 	cargo check --workspace
-	pre-commit install --install-hooks
+	uvx prek install --install-hooks
 
 .PHONY: dev-py
 dev-py: ## Install the python package for development
@@ -86,7 +82,7 @@ lint-rs:  ## Lint Rust code with clippy and import checks
 	@cargo clippy --version
 	cargo clippy --workspace --tests -p monty-bench --bench main -- -D warnings
 	cargo clippy --workspace --tests --all-features -- -D warnings
-	uv run scripts/check_imports.py
+	./scripts/check_imports.py
 
 .PHONY: clippy-fix
 clippy-fix: ## Fix Rust code with clippy

@@ -21,7 +21,7 @@ use crate::{
     metadata::{AnnotatedObject, MetadataId, MetadataStore, ObjectMetadata},
     resource::{ResourceError, ResourceTracker},
     types::{
-        LongInt, NamedTuple, Path, PyTrait, TimeZone, Tuple, Type,
+        Dataclass, LongInt, NamedTuple, Path, PyTrait, TimeZone, Tuple, Type,
         bytes::{Bytes, bytes_repr},
         date as date_type, datetime as datetime_type,
         dict::Dict,
@@ -525,7 +525,6 @@ impl MontyObject {
                 attrs,
                 frozen,
             } => {
-                use crate::types::Dataclass;
                 let pairs: Result<Vec<_>, InvalidInputError> = attrs
                     .into_iter()
                     .map(|(k, v)| {
