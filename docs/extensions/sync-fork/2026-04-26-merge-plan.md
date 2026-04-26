@@ -105,6 +105,32 @@ land green and `make ext-test` passes on staging, fast-forward
 `tiny-beaver-ext` to the staging tip in one step. Mirrors the prior sync
 (`cz/fork-sync/2026-04-18` → `tiny-beaver-ext`).
 
+### Stacking note
+
+PR-A (trivia + JS) and PR-B (self-contained core fixes) are independent —
+they share no real conflict surface and can be reviewed in parallel.
+
+PR-C **stacks on PR-B**: both touch `crates/monty/src/heap.rs` around the
+empty-tuple singleton initialization. PR-B's `4a942bb` rewrites that block,
+and PR-C's `08817fc` (move hashing into `PyTrait`) rewrites it again to
+hash the singleton at init time. Branching PR-C off staging produces a real
+conflict; branching off PR-B's tip auto-merges cleanly.
+
+PR-D **stacks on PR-C**: `4dc46f2` depends on `e777ebf`'s `build.rs`, and
+the public-API reshape in PR-D will likely interact with the new `py_hash`
+trait method introduced in PR-C.
+
+So the practical branch chain is:
+
+```
+tiny-beaver-ext
+  └── cz/sync-fork/2026-04-26 (staging)
+        ├── cz/sync-fork/2026-04-26-A      (off staging)
+        └── cz/sync-fork/2026-04-26-B      (off staging)
+              └── cz/sync-fork/2026-04-26-C  (off PR-B)
+                    └── cz/sync-fork/2026-04-26-D  (off PR-C)
+```
+
 ## Per-PR contents
 
 ### PR-A — Trivia + JS-only
