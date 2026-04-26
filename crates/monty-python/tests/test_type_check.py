@@ -124,8 +124,8 @@ add(1, 2)
     assert m.type_check() is None
 
 
-def test_type_check_with_prefix_code():
-    """Type checking with prefix code for input declarations."""
+def test_type_check_with_type_check_stubs():
+    """Type checking with type-check stub source for input declarations."""
     m = pydantic_monty.Monty('result = x + 1')
     # Without prefix, x is undefined
     with pytest.raises(pydantic_monty.MontyTypingError):
@@ -403,7 +403,7 @@ def test_repl_type_check_method_with_errors():
 
 
 def test_repl_type_check_method_with_prefix():
-    """MontyRepl.type_check() uses prefix_code for declarations."""
+    """MontyRepl.type_check() uses type_check_stubs for declarations."""
     repl = pydantic_monty.MontyRepl()
     # Without prefix, x is undefined
     with pytest.raises(pydantic_monty.MontyTypingError):

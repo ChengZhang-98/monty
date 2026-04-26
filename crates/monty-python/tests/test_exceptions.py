@@ -180,10 +180,10 @@ def test_syntax_error_stubs_lone_surrogate_without_type_check():
     assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8')
 
 
-def test_syntax_error_type_check_prefix_code_lone_surrogate():
-    # The standalone `Monty.type_check(prefix_code=...)` entry point shares the
-    # same extraction logic, so invalid UTF-8 in `prefix_code` is also raised
-    # as `MontySyntaxError`.
+def test_syntax_error_type_check_stubs_lone_surrogate():
+    # The standalone `Monty.type_check(type_check_stubs=...)` entry point shares
+    # the same extraction logic, so invalid UTF-8 in `type_check_stubs` is also
+    # raised as `MontySyntaxError`.
     m = pydantic_monty.Monty('1')
     with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
         m.type_check('\ud83d')

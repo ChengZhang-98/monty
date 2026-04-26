@@ -146,9 +146,9 @@ impl PyMontyRepl {
 
     /// Performs static type checking on the given code snippet.
     ///
-    /// Checks the snippet in isolation using `prefix_code` as stub context.
+    /// Checks the snippet in isolation using `type_check_stubs` as stub context.
     /// This does not use the accumulated code from previous `feed_run` calls —
-    /// use `prefix_code` to provide any needed declarations.
+    /// use `type_check_stubs` to provide any needed declarations.
     #[pyo3(signature = (code, type_check_stubs=None))]
     fn type_check(
         &self,

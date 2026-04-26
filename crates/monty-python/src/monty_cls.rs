@@ -161,7 +161,7 @@ impl PyMonty {
     /// a subset of Python's type system supported by Monty.
     ///
     /// # Args
-    /// * `prefix_code` - Optional prefix to prepend to the code before type checking,
+    /// * `type_check_stubs` - Optional stub source to prepend to the code before type checking,
     ///   e.g. with inputs and external function signatures
     ///
     /// # Raises

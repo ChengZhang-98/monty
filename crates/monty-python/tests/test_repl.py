@@ -196,8 +196,8 @@ def test_syntax_error_stubs_lone_surrogate():
     assert str(exc_info.value) == snapshot('type_check_stubs is not valid UTF-8')
 
 
-def test_syntax_error_type_check_prefix_code_lone_surrogate():
-    # The standalone `MontyRepl.type_check(prefix_code=...)` also validates
+def test_syntax_error_type_check_stubs_lone_surrogate():
+    # The standalone `MontyRepl.type_check(type_check_stubs=...)` also validates
     # UTF-8 and raises `MontySyntaxError`.
     repl = pydantic_monty.MontyRepl()
     with pytest.raises(pydantic_monty.MontySyntaxError) as exc_info:
