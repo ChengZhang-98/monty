@@ -140,10 +140,14 @@ uv run pytest ext_tests/
 Commits (no parameter-shape changes, narrow file scope):
 
 - `4a942bb` empty-tuple singleton off memory limit (16 lines, `heap.rs` only)
-- `4dc46f2` `prefix_code` → `type_check_stubs` (pure rename)
 - `d5444c6` `setattr` builtin
 - `3890e83` GC interval fix (heap/resource/run/limits)
 - `9e36ce3` `i64::MIN` negation refactor (slice/bytes/list/range/str/tuple)
+
+(`4dc46f2` `prefix_code` → `type_check_stubs` rename was originally planned
+here but moved to PR-D — it modifies `crates/monty-python/src/build.rs`,
+which is created by `e777ebf` and doesn't yet exist on `tiny-beaver-ext`.
+Landing it in PR-D after `e777ebf` resolves the dependency cleanly.)
 
 Watch-points:
 
@@ -196,6 +200,9 @@ Commits (parameters thread through every Monty/MontyRepl entry point):
 - `e50f8eb` chain assignment
 - `e777ebf` async Monty build without GIL
 - `ba26c2e` input safety
+- `4dc46f2` `prefix_code` → `type_check_stubs` rename (depends on `build.rs`
+  from `e777ebf`; land it after `e777ebf` and `ba26c2e`, before any other
+  reshape work)
 
 Approach: this is the equivalent of the 2026-04-17 `monty_cls.rs` reshape.
 Reuse the per-method recipe from `2026-04-17-merge-plan.md` §"Mechanical
