@@ -15,12 +15,47 @@ Project goals:
 - **Cross-platform**: Runs on Linux, macOS, and Windows (and any other OS that can run Rust)
 - Targets the latest stable version of Python, currently Python 3.14
 
-## Branching Strategy
+## Fork purpose and branching strategy
 
-This repository is a fork of [pydantic/monty](https://github.com/pydantic/monty). Two key branches:
+This repository is a personal fork at
+[ChengZhang-98/monty](https://github.com/ChengZhang-98/monty) of upstream
+[pydantic/monty](https://github.com/pydantic/monty). The fork exists to extend
+Monty for the [tiny-beaver](https://github.com/ChengZhang-98/tiny-beaver) LLM
+agent framework — primarily **metadata propagation** (data provenance:
+producers / consumers / tags tracked through every value), needed by
+tiny-beaver's visibility/sanitization layer that decides what tool output
+the planning LLM may see. See `docs/extensions/README.md` for the full
+extension catalog and `docs/extensions/architecture.md` for how extensions
+interact with Monty's VM.
 
-- **`main`** — Tracks upstream `pydantic/monty` main. Used only for syncing with the original repo. Do NOT commit custom features here.
-- **`tiny-beaver-ext`** — The working branch for all custom extensions and new features. Accepts merges from both upstream (via `main`) and local development.
+### Branches
+
+- **`main`** — bridge branch. Mirrors upstream `pydantic/monty` main verbatim,
+  synced via GitHub's "Sync fork" UI (no local `upstream` remote configured).
+  **Never commit custom features here** — `main` is treated as read-only,
+  used only as a staging area for upstream changes before merging into the
+  working branch.
+- **`tiny-beaver-ext`** — the working branch where all extensions live. This
+  is what the tiny-beaver project depends on. Accepts (a) periodic upstream
+  catch-up merges via `main`, and (b) feature/fix work via per-feature
+  branches that merge back here.
+- **`cz/sync-fork/<YYYY-MM-DD>[-X]`** — convention for upstream-sync work.
+  Each periodic sync from `main` lands on a staging branch
+  `cz/sync-fork/<date>`, with optional sub-branches `<date>-A`/`-B`/`-C`/`-D`
+  for breaking large syncs into reviewable PRs. The plan + completion notes
+  for each sync live under `docs/extensions/sync-fork/`.
+
+### Sync workflow at a glance
+
+When pulling new upstream changes into the fork: sync `main` from upstream
+via the GitHub UI, branch `cz/sync-fork/<date>` off `tiny-beaver-ext`, write
+a plan in `docs/extensions/sync-fork/<date>-merge-plan.md` (commit list +
+risk classification + per-PR split), cherry-pick / merge with conflict
+resolution, validate with the full test suite (see "Dev Commands" below),
+write completion notes alongside the plan, then squash-merge sub-PRs into
+the staging branch and fast-forward `tiny-beaver-ext`. Prior syncs
+(`2026-04-17`, `2026-04-19`, `2026-04-26`) provide worked examples under
+`docs/extensions/sync-fork/`.
 
 ## Cross-Platform Requirements
 
