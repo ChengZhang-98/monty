@@ -710,11 +710,12 @@ impl<'de, T: ResourceTracker + serde::Deserialize<'de>> serde::Deserialize<'de> 
     }
 }
 
-/// GC interval - run GC every 100,000 applicable allocations.
+/// Default GC interval - run GC every 100,000 applicable allocations unless
+/// the configured resource tracker overrides it.
 ///
 /// This is intentionally infrequent to minimize overhead while still
 /// eventually collecting reference cycles.
-const GC_INTERVAL: u32 = 100_000;
+const DEFAULT_GC_INTERVAL: usize = 100_000;
 
 impl<T: ResourceTracker> Heap<T> {
     /// Creates a new heap with the given resource tracker.
@@ -729,11 +730,17 @@ impl<T: ResourceTracker> Heap<T> {
             recursion_depth: Cell::new(0),
             timezone_utc: None,
         };
-        // TBC: should the empty tuple contribute to the resource limits?
-        // If not, can just place it in `entries` directly without going through `allocate()`.
-        let empty_tuple = this
-            .allocate(HeapData::Tuple(Tuple::default()))
-            .expect("Failed to allocate empty tuple singleton");
+
+        let empty_tuple = HeapData::Tuple(Tuple::default());
+        let hash_state = HashState::for_data(&empty_tuple);
+        let new_entry = HeapValue {
+            refcount: Cell::new(1),
+            readers: Cell::new(0),
+            data: UnsafeHeapData(UnsafeCell::new(empty_tuple)),
+            hash_state,
+        };
+
+        let empty_tuple = this.entries.allocate(new_entry);
         debug_assert_eq!(empty_tuple, EMPTY_TUPLE_ID);
         this
     }
@@ -1222,7 +1229,8 @@ impl<T: ResourceTracker> Heap<T> {
     /// and the number of allocations since the last GC exceeds the interval.
     #[inline]
     pub fn should_gc(&self) -> bool {
-        self.may_have_cycles.get() && self.allocations_since_gc.get() >= GC_INTERVAL
+        let interval = self.tracker.gc_interval().unwrap_or(DEFAULT_GC_INTERVAL);
+        self.may_have_cycles.get() && (self.allocations_since_gc.get() as usize) >= interval
     }
 
     /// Runs mark-sweep garbage collection to free unreachable cycles.
