@@ -243,9 +243,14 @@ impl<'h> PyTrait<'h> for HeapRead<'h, Tuple> {
         if let Value::Ref(key_id) = key
             && let HeapData::Slice(slice_obj) = vm.heap.get(*key_id)
         {
-            let items =
+            // Slice items and per-element metadata in parallel against the same slice
+            // spec so `result.item_metadata[i]` corresponds to `result.items[i]`. Mirrors
+            // the metadata-aware path in `List::getitem_slice`.
+            let items: TupleVec =
                 slice_collect_iterator(vm, slice_obj, self.get(vm.heap).items.iter(), |v| v.clone_with_heap(vm))?;
-            return Ok(allocate_tuple(items, vm.heap)?);
+            let metadata: SmallVec<[MetadataId; TUPLE_INLINE_CAPACITY]> =
+                slice_collect_iterator(vm, slice_obj, self.get(vm.heap).item_metadata.iter(), |m| *m)?;
+            return Ok(allocate_tuple_with_metadata(items, metadata, vm.heap)?);
         }
 
         // Extract integer index, accepting Int, Bool (True=1, False=0), and LongInt
