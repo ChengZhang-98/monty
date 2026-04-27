@@ -378,7 +378,6 @@ fn metadata_tuple_input_preserves_element_metadata() {
 
 #[test]
 fn metadata_dict_input_preserves_key_and_value_metadata() {
-    use monty::AnnotatedDictPairs;
     let meta_key = meta(Some(&["key_src"]), None, Some(&[]));
     let meta_val = meta(Some(&["val_src"]), Some(&["viewer"]), Some(&["sensitive"]));
     let input_dict = MontyObject::Dict(AnnotatedDictPairs(vec![(
@@ -514,7 +513,6 @@ fn metadata_star_args_propagates_to_function_params() {
 #[test]
 fn metadata_dict_update_preserves_value_metadata() {
     // {**d} should preserve per-key and per-value metadata from the source dict
-    use monty::AnnotatedDictPairs;
     let meta_val = meta(Some(&["api"]), None, Some(&["sensitive"]));
     let input_dict = MontyObject::Dict(AnnotatedDictPairs(vec![(
         AnnotatedObject::new(MontyObject::String("key".to_string()), None),
