@@ -28,6 +28,7 @@ mod print;
 mod repr;
 mod reversed;
 mod round;
+mod setattr;
 mod sorted;
 mod sum;
 mod type_;
@@ -192,7 +193,7 @@ pub enum BuiltinsFunctions {
     Reversed,
     Round,
     // set - handled by Type enum
-    // Setattr,
+    Setattr,
     // Slice,
     Sorted,
     // Staticmethod,
@@ -239,6 +240,7 @@ impl BuiltinsFunctions {
             Self::Repr => repr::builtin_repr(vm, args),
             Self::Reversed => reversed::builtin_reversed(vm, args),
             Self::Round => round::builtin_round(vm, args),
+            Self::Setattr => setattr::builtin_setattr(vm, args),
             Self::Sorted => sorted::builtin_sorted(vm, args),
             Self::Sum => sum::builtin_sum(vm, args),
             Self::Type => type_::builtin_type(vm, args),

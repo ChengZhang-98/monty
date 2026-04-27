@@ -259,19 +259,6 @@ impl ExcType {
         })
     }
 
-    /// Creates a FrozenInstanceError for assigning to a frozen dataclass.
-    ///
-    /// Matches CPython's `dataclasses.FrozenInstanceError` which is a subclass of `AttributeError`.
-    /// Message format: "cannot assign to field 'attr_name'"
-    #[must_use]
-    pub(crate) fn frozen_instance_error(attr_name: &str) -> RunError {
-        SimpleException::new_msg(
-            Self::FrozenInstanceError,
-            format!("cannot assign to field '{attr_name}'"),
-        )
-        .into()
-    }
-
     #[must_use]
     pub(crate) fn type_error_not_sub(type_: Type) -> RunError {
         SimpleException::new_msg(Self::TypeError, format!("'{type_}' object is not subscriptable")).into()
@@ -1091,12 +1078,12 @@ impl ExcType {
         SimpleException::new_msg(Self::ValueError, "negative shift count").into()
     }
 
-    /// Creates an OverflowError for shift count exceeding integer size.
+    /// Creates an OverflowError when converting values to C ssize_t (i64) for operations like length checks.
     ///
     /// Matches CPython's format: `OverflowError: Python int too large to convert to C ssize_t`
     /// Note: CPython uses this message because it tries to convert to ssize_t for the shift amount.
     #[must_use]
-    pub(crate) fn overflow_shift_count() -> RunError {
+    pub(crate) fn overflow_c_ssize_t() -> RunError {
         SimpleException::new_msg(Self::OverflowError, "Python int too large to convert to C ssize_t").into()
     }
 

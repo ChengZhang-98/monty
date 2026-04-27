@@ -4,6 +4,10 @@
 //! via path traversal, null bytes, symlinks, or any other technique.
 //! Tests cover all mount modes to ensure the security invariant holds everywhere.
 
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
+#[cfg(windows)]
+use std::os::windows::fs::{symlink_dir as win_symlink_dir, symlink_file as win_symlink_file};
 use std::{fs, path::Path};
 
 use monty::{
@@ -106,15 +110,9 @@ fn all_modes() -> Vec<(&'static str, MountMode)> {
 /// `std::os::windows::fs::symlink_file`.
 fn symlink_file(original: impl AsRef<Path>, link: impl AsRef<Path>) {
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::symlink;
-        symlink(original.as_ref(), link.as_ref()).unwrap();
-    }
+    symlink(original.as_ref(), link.as_ref()).unwrap();
     #[cfg(windows)]
-    {
-        use std::os::windows::fs::symlink_file as win_symlink_file;
-        win_symlink_file(original.as_ref(), link.as_ref()).unwrap();
-    }
+    win_symlink_file(original.as_ref(), link.as_ref()).unwrap();
 }
 
 /// Cross-platform symlink to a directory.
@@ -123,15 +121,9 @@ fn symlink_file(original: impl AsRef<Path>, link: impl AsRef<Path>) {
 /// `std::os::windows::fs::symlink_dir`.
 fn symlink_dir(original: impl AsRef<Path>, link: impl AsRef<Path>) {
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::symlink;
-        symlink(original.as_ref(), link.as_ref()).unwrap();
-    }
+    symlink(original.as_ref(), link.as_ref()).unwrap();
     #[cfg(windows)]
-    {
-        use std::os::windows::fs::symlink_dir as win_symlink_dir;
-        win_symlink_dir(original.as_ref(), link.as_ref()).unwrap();
-    }
+    win_symlink_dir(original.as_ref(), link.as_ref()).unwrap();
 }
 
 // =============================================================================
@@ -621,8 +613,6 @@ mod hard_link_tests {
     #[test]
     #[cfg(unix)]
     fn broken_symlink_write_escape_blocked() {
-        use std::os::unix::fs::symlink;
-
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
         let escape_target = outside.path().join("pwned.txt");
@@ -651,8 +641,6 @@ mod hard_link_tests {
     #[test]
     #[cfg(unix)]
     fn broken_symlink_overlay_writes_to_memory_not_real_fs() {
-        use std::os::unix::fs::symlink;
-
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
         let escape_target = outside.path().join("pwned.txt");
@@ -684,8 +672,6 @@ mod hard_link_tests {
     #[test]
     #[cfg(unix)]
     fn iterdir_filters_outbound_symlinks_but_keeps_regular_and_inbound() {
-        use std::os::unix::fs::symlink;
-
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("external.txt"), "external").unwrap();
@@ -731,8 +717,6 @@ mod hard_link_tests {
     #[test]
     #[cfg(unix)]
     fn overlay_iterdir_filters_symlinks_like_direct_mode() {
-        use std::os::unix::fs::symlink;
-
         let dir = create_test_dir();
         let outside = TempDir::new().unwrap();
         fs::write(outside.path().join("external.txt"), "external").unwrap();

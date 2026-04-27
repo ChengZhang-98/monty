@@ -366,10 +366,12 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
-    use crate::heap::{HashState, HeapData, UnsafeHeapData};
+    use crate::{
+        heap::{HashState, HeapData, UnsafeHeapData},
+        types::Str,
+    };
 
     fn dummy(label: &str) -> HeapValue {
-        use crate::types::Str;
         HeapValue {
             refcount: Cell::new(1),
             data: UnsafeHeapData(UnsafeCell::new(HeapData::Str(Str::new(label.to_owned())))),
