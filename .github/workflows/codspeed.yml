@@ -15,6 +15,9 @@ jobs:
   benchmarks:
     name: Run benchmarks
     runs-on: ubuntu-latest
+    # Skip on forks: CodSpeed requires a CODSPEED_TOKEN secret that GitHub
+    # does not expose to forks, so the job fails with no way to recover.
+    if: github.repository == 'pydantic/monty'
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
