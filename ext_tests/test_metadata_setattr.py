@@ -1,21 +1,14 @@
 """Tests for the `setattr` builtin (`d5444c6`, PR #67) interacting with
 extension metadata.
 
-**Status: pins down current behavior — `setattr` does NOT propagate value metadata.**
+`builtin_setattr` and the `StoreAttr` opcode now thread `value_meta` through
+`Value::py_set_attr` → `Dataclass::set_attr` → `Dict::set_with_meta`, so
+`setattr(obj, "x", tainted)` and `obj.x = tainted` both preserve the value's
+metadata (producers / consumers / tags) on the resulting attribute.
 
-The new `builtin_setattr` calls `Value::py_set_attr` → `Dataclass::set_attr` →
-`Dict::set` (NOT `Dict::set_with_meta`). So `setattr(obj, "x", tainted)`
-currently produces an attribute with default (empty) metadata, dropping the
-value's metadata on the floor.
-
-This is consistent with extension's existing `obj.attr = tainted` codepath
-(also calls plain `Dict::set`) — so it's not a setattr-specific regression,
-but a pre-existing extension gap that the new builtin inherits.
-
-When the gap is closed in a follow-up extension (wiring metadata through
-`Dict::set` for dataclass attrs), the `_drops_metadata` test below will
-fail. That failure is a feature: it forces flipping the assertion to
-"preserves" and confirming the new behavior intentionally.
+These tests cover both entry points — the `setattr` builtin and the
+`StoreAttr` opcode (`obj.x = v` syntax) — because they share the same fix
+site (`Dataclass::set_attr` calling `Dict::set_with_meta`).
 
 Note: Monty's parser does not support inline `class` definitions, so the
 test dataclass is defined at module scope on the host side and registered
@@ -55,16 +48,12 @@ def test_setattr_value_roundtrips() -> None:
     assert result == snapshot(99)
 
 
-# === Current behavior: setattr drops the value's metadata ===
+# === setattr preserves the value's metadata ===
 
 
-def test_setattr_drops_value_metadata() -> None:
-    """Documents current behavior: `setattr(b, 'x', tainted)` then `print(b.x)`
-    shows the value but with default (empty) metadata, not the tainted's metadata.
-
-    This is the gap. When closed, this test will fail and should be flipped to
-    `frozenset({'src_a'})`.
-    """
+def test_setattr_preserves_value_metadata() -> None:
+    """`setattr(b, 'x', tainted)` followed by `print(b.x)` propagates `tainted`'s
+    metadata onto the read-back value, end-to-end through `Dict::set_with_meta`."""
     code = "setattr(b, 'x', tainted); print(b.x)"
     m = pydantic_monty.Monty(code, inputs=['b', 'tainted'], dataclass_registry=[Box])
     calls: list[tuple[Any, pydantic_monty.ObjectMetadata]] = []
@@ -82,6 +71,31 @@ def test_setattr_drops_value_metadata() -> None:
     )
     assert len(calls) == snapshot(1)
     _, meta = calls[0]
-    # Current behavior: metadata is lost in Dict::set (not Dict::set_with_meta).
-    # When the gap is closed, this should become `frozenset({'src_a'})`.
-    assert meta.producers == snapshot(frozenset())
+    assert meta.producers == snapshot(frozenset({'src_a'}))
+
+
+# === StoreAttr opcode (`obj.x = tainted`) preserves the value's metadata ===
+
+
+def test_store_attr_preserves_value_metadata() -> None:
+    """The `obj.x = tainted` syntax (compiled to `StoreAttr`) shares the
+    `Dataclass::set_attr` fix site with `setattr`, so it must propagate metadata
+    the same way."""
+    code = "b.x = tainted; print(b.x)"
+    m = pydantic_monty.Monty(code, inputs=['b', 'tainted'], dataclass_registry=[Box])
+    calls: list[tuple[Any, pydantic_monty.ObjectMetadata]] = []
+
+    def cb(stream: str, objects: list[pydantic_monty.AnnotatedValue], sep: str, end: str) -> None:
+        for obj in objects:
+            calls.append((obj.value, obj.metadata))
+
+    m.run(
+        inputs={
+            'b': Box(x=0),
+            'tainted': pydantic_monty.AnnotatedValue(99, _meta(producers=frozenset({'src_b'}))),
+        },
+        structured_print_callback=cb,
+    )
+    assert len(calls) == snapshot(1)
+    _, meta = calls[0]
+    assert meta.producers == snapshot(frozenset({'src_b'}))

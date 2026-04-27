@@ -22,6 +22,12 @@ use crate::{
 /// setattr(obj, 'name', 'foo') # Set obj.name = 'foo'
 /// ```
 pub fn builtin_setattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValues) -> RunResult<Value> {
+    // Capture the value argument's metadata before consuming `args`. Positional arg
+    // metadata lives at `vm.pending_arg_metadata[i]`; for `setattr(obj, name, value)`
+    // the value is the third positional, index 2. Falls back to DEFAULT if the slot
+    // wasn't populated (e.g. older call paths that pre-date metadata threading).
+    let value_meta = vm.pending_arg_metadata.get(2).copied().unwrap_or_default();
+
     let positional = args.into_pos_only("setattr", vm.heap)?;
     defer_drop!(positional, vm);
 
@@ -39,7 +45,7 @@ pub fn builtin_setattr(vm: &mut VM<'_, '_, impl ResourceTracker>, args: ArgValue
     };
 
     // note: py_set_attr takes ownership of the inc-ref'd value and drops it on error
-    object.py_set_attr(&name, value.clone_with_heap(vm), vm)?;
+    object.py_set_attr(&name, value.clone_with_heap(vm), value_meta, vm)?;
 
     Ok(Value::None)
 }

@@ -1287,10 +1287,28 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 }
                 Opcode::StoreSubscr => {
                     // Stack order: value, obj, index (TOS)
-                    let index = self.pop();
+                    let (index, key_meta) = self.pop_with_meta();
                     let mut obj = self.pop();
-                    let value = self.pop();
-                    let result = obj.py_setitem(index, value, self);
+                    let (value, value_meta) = self.pop_with_meta();
+                    // Dict stores route through `set_with_meta` so `d[k] = v` preserves the
+                    // value's provenance (and the key's, per the §"Dict key metadata is
+                    // preserved" design decision in the 2026-04-26 sync notes). Other
+                    // setitem-supporting types (List, custom __setitem__) fall through to the
+                    // existing meta-less path; their metadata-handling is a separate gap.
+                    let result = if let Value::Ref(obj_id) = obj
+                        && let HeapReadOutput::Dict(mut dict) = self.heap.read(obj_id)
+                    {
+                        match dict.set_with_meta(index, key_meta, value, value_meta, self) {
+                            Ok(Some(old)) => {
+                                old.drop_with_heap(self);
+                                Ok(())
+                            }
+                            Ok(None) => Ok(()),
+                            Err(e) => Err(e),
+                        }
+                    } else {
+                        obj.py_setitem(index, value, self)
+                    };
                     obj.drop_with_heap(self);
                     if let Err(e) = result {
                         catch_sync!(self, cached_frame, e);
@@ -1299,17 +1317,24 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 Opcode::LoadAttr => {
                     let name_idx = fetch_u16!(cached_frame);
                     let name_id = StringId::from_index(name_idx);
-                    // Capture object metadata before load_attr pops the object
+                    // Capture object metadata and the attribute-level metadata stored
+                    // on the dataclass (if any) before load_attr pops the object. The
+                    // attribute meta is merged with the object meta so writes via
+                    // `setattr(obj, k, v)` / `obj.x = v` surface their provenance to the
+                    // caller, alongside any container-level metadata on `obj` itself.
                     let obj_meta = self.peek_meta();
+                    let attr_meta = self.lookup_attr_meta(self.peek(), name_id);
+                    let merged = self.metadata_store.merge(obj_meta, attr_meta);
                     handle_call_result!(self, cached_frame, self.load_attr(name_id));
-                    // Stamp the object's metadata on the attribute that was just pushed
                     if let Some(last) = self.meta_stack.last_mut() {
-                        *last = obj_meta;
+                        *last = merged;
                     }
                 }
                 Opcode::LoadAttrImport => {
                     let name_idx = fetch_u16!(cached_frame);
                     let name_id = StringId::from_index(name_idx);
+                    // `from module import name` — modules don't carry per-attribute
+                    // metadata, so only the module-level (object) metadata propagates.
                     let obj_meta = self.peek_meta();
                     handle_call_result!(self, cached_frame, self.load_attr_import(name_id));
                     if let Some(last) = self.meta_stack.last_mut() {
@@ -2224,6 +2249,30 @@ impl<'h, 'a, T: ResourceTracker> VM<'h, 'a, T> {
                 .unwrap_or(MetadataId::DEFAULT),
             _ => MetadataId::DEFAULT,
         }
+    }
+
+    /// Looks up per-attribute metadata for `obj.<name>` without merging.
+    ///
+    /// Dataclass attributes are stored in an inline `Dict` keyed by attribute name; the
+    /// per-entry `value_meta` is the attribute's stored metadata. This is the read-side
+    /// counterpart to the `Dataclass::set_attr` → `Dict::set_with_meta` write path —
+    /// without it, `LoadAttr` would stamp only the object's metadata and the per-attribute
+    /// provenance from `setattr(obj, k, v)` / `obj.x = v` would never surface to the
+    /// caller.
+    ///
+    /// Returns `MetadataId::DEFAULT` for non-Dataclass objects or unknown attributes.
+    fn lookup_attr_meta(&self, obj: &Value, name_id: StringId) -> MetadataId {
+        let Value::Ref(obj_id) = obj else {
+            return MetadataId::DEFAULT;
+        };
+        if let HeapData::Dataclass(dc) = self.heap.get(*obj_id) {
+            let key = Value::InternString(name_id);
+            return dc
+                .attrs()
+                .value_meta_for_key(&key, self.heap, self.interns)
+                .unwrap_or(MetadataId::DEFAULT);
+        }
+        MetadataId::DEFAULT
     }
 }
 

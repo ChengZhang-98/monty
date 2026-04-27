@@ -79,18 +79,13 @@ def test_dict_reinsert_same_key_different_meta() -> None:
     assert result == snapshot(2)
 
 
-# === Current behavior: dict subscript-store drops value metadata ===
+# === Dict subscript-store preserves value metadata ===
 
 
-def test_dict_subscript_store_drops_value_metadata() -> None:
-    """Documents current behavior: `d[k] = v` stores v but loses v's metadata.
-
-    Same `Dict::set` vs `Dict::set_with_meta` gap as `setattr` (see
-    `test_metadata_setattr.py`). The compiler-emitted `StoreSubscript` opcode
-    routes through `Dict::set`, which doesn't take metadata.
-
-    When this gap is closed (compiler routes through `Dict::set_with_meta`),
-    the assertion should flip to `frozenset({'val_src'})`.
+def test_dict_subscript_store_preserves_value_metadata() -> None:
+    """`d[k] = v` propagates `v`'s metadata onto the stored entry. The VM's
+    `StoreSubscr` opcode now special-cases Dict to call `set_with_meta`,
+    sharing the same fix shape as the `setattr`/`StoreAttr` gap closure.
     """
     from typing import Any
 
@@ -116,6 +111,4 @@ print(d[k])
     assert len(calls) == snapshot(1)
     value, meta = calls[0]
     assert value == snapshot('myval')
-    # Current behavior: metadata is lost in Dict::set (not Dict::set_with_meta).
-    # When the gap is closed, this should become `frozenset({'val_src'})`.
-    assert meta.producers == snapshot(frozenset())
+    assert meta.producers == snapshot(frozenset({'val_src'}))

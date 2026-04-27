@@ -17,6 +17,7 @@ use crate::{
         heap_read_ref_as_field_mut,
     },
     intern::Interns,
+    metadata::MetadataId,
     resource::{ResourceError, ResourceTracker},
     types::Type,
     value::{EitherStr, Value},
@@ -133,10 +134,16 @@ impl<'h> HeapRead<'h, Dataclass> {
     /// is a new attribute.
     ///
     /// Returns `FrozenInstanceError` if the dataclass is frozen.
+    ///
+    /// `value_meta` carries the metadata (producers/consumers/tags) of the value being
+    /// assigned, so attribute writes through `setattr(obj, k, v)` and `obj.x = v` preserve
+    /// provenance information end-to-end via [`Dict::set_with_meta`]. Attribute names
+    /// themselves carry no metadata; the key meta is always `MetadataId::DEFAULT`.
     pub fn set_attr(
         &mut self,
         name: Value,
         value: Value,
+        value_meta: MetadataId,
         vm: &mut VM<'h, '_, impl ResourceTracker>,
     ) -> RunResult<Option<Value>> {
         if self.get(vm.heap).frozen {
@@ -150,7 +157,8 @@ impl<'h> HeapRead<'h, Dataclass> {
             value.drop_with_heap(vm);
             return Err(exc.into());
         }
-        self.attrs_mut().set(name, value, vm)
+        self.attrs_mut()
+            .set_with_meta(name, MetadataId::DEFAULT, value, value_meta, vm)
     }
 
     pub fn attrs(&self) -> BorrowedHeapRead<'_, 'h, Dict> {

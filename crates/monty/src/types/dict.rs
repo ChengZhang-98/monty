@@ -190,6 +190,14 @@ impl Dict {
                         false
                     }
                 }
+                // Both keys are heap-allocated strings — compare contents. Different heap
+                // ids can refer to equal strings (e.g. one came in from a host input,
+                // another was produced inside the sandbox), so identity comparison
+                // alone misses real matches.
+                (Value::Ref(a_id), Value::Ref(b_id)) => match (heap.get(*a_id), heap.get(*b_id)) {
+                    (HeapData::Str(a), HeapData::Str(b)) => a.as_str() == b.as_str(),
+                    _ => false,
+                },
                 _ => false,
             };
             if matches { Some(e.value_meta) } else { None }

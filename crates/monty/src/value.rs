@@ -20,6 +20,7 @@ use crate::{
     exception_private::{ExcType, RunError, RunResult, SimpleException},
     heap::{ContainsHeap, DropWithHeap, Heap, HeapData, HeapGuard, HeapId, HeapReadOutput},
     intern::{BytesId, FunctionId, Interns, LongIntId, StaticStrings, StringId},
+    metadata::MetadataId,
     modules::ModuleFunctions,
     resource::{ResourceError, ResourceTracker, check_div_size, check_lshift_size, check_pow_size, check_repeat_size},
     types::{
@@ -1715,10 +1716,15 @@ impl Value {
     ///
     /// Takes ownership of `value` and drops it on error.
     /// On success, drops the old attribute value if one existed.
+    ///
+    /// `value_meta` carries the metadata of `value` so attribute writes via the
+    /// `StoreAttr` opcode and the `setattr` builtin preserve provenance through
+    /// `Dataclass::set_attr` → `Dict::set_with_meta`.
     pub fn py_set_attr(
         &self,
         name: &EitherStr,
         value: Self,
+        value_meta: MetadataId,
         vm: &mut VM<'_, '_, impl ResourceTracker>,
     ) -> RunResult<()> {
         if let Self::Ref(heap_id) = self {
@@ -1730,7 +1736,7 @@ impl Value {
                         // `EitherStr` should store a `HeapRead<Str>`?
                         EitherStr::Heap(s) => Self::Ref(vm.heap.allocate(HeapData::Str(Str::from(s.to_owned())))?),
                     };
-                    let old_value = dc.set_attr(name_value, value, vm)?;
+                    let old_value = dc.set_attr(name_value, value, value_meta, vm)?;
                     old_value.drop_with_heap(vm);
                     Ok(())
                 }

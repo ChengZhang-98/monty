@@ -60,8 +60,10 @@ impl<T: ResourceTracker> VM<'_, '_, T> {
         let obj = this.pop();
         defer_drop!(obj, this);
 
-        let value = this.pop();
+        // Capture the value's metadata before py_set_attr consumes it so the assigned
+        // attribute carries the value's provenance (producers/consumers/tags) end-to-end.
+        let (value, value_meta) = this.pop_with_meta();
         // py_set_attr takes ownership of value and drops it on error
-        obj.py_set_attr(&EitherStr::Interned(name_id), value, this)
+        obj.py_set_attr(&EitherStr::Interned(name_id), value, value_meta, this)
     }
 }
